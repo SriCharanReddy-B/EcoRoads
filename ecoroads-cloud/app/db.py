@@ -115,7 +115,10 @@ def connect():
     if backend() == "postgres":
         import psycopg
         from psycopg.rows import dict_row
-        raw = psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row, connect_timeout=15)
+        # prepare_threshold=None: no server-side prepared statements, so Neon's
+        # pooled (PgBouncer) connection strings work too.
+        raw = psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row, connect_timeout=15,
+                              prepare_threshold=None)
         try:
             yield _PgConn(raw)
             raw.commit()

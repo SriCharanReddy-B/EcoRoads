@@ -1,114 +1,199 @@
-# Deploying EcoRoads (free) + the downloadable edge node
+# Deploying EcoRoads: step-by-step
 
-The result is a single web address, for example `https://ecoroads-xxxx.onrender.com`:
+**What you'll have at the end:** one public address, for example `https://ecoroads-ab12.onrender.com`.
 
 | Address | What it is |
 |---|---|
-| `https://…onrender.com/` | the municipal dashboard: register, view, mark repairs |
-| `https://…onrender.com/api/…` | the API vehicles sync to (docs at `/docs`) |
-| `https://…onrender.com/downloads/EcoRoads-Edge.zip` | the edge node installer for vehicle laptops |
+| `/` | Municipal dashboard: register wards, view potholes, mark repairs |
+| `/api/…` | Where vehicle laptops upload. Interactive docs at `/docs` |
+| `/downloads/EcoRoads-Edge.zip` | Installer for vehicle laptops |
 
 ```
- vehicle laptops ── HTTPS ──►  Render (free web service, Docker)  ──►  Neon (free PostgreSQL)
- (EcoRoads-Edge.zip)            FastAPI + dashboard, one container       keeps data across restarts
- municipal staff ── browser ──►  same address, each with a private link
+ vehicle laptops ── HTTPS ──► Render (free)  ── SQL ──►  Neon (free PostgreSQL)
+ municipal staff ── browser ─► same address              data survives restarts
 ```
 
-**Why two services?** Render's free web service wipes its disk whenever it restarts. The data therefore lives in a free Neon PostgreSQL database. The app switches to PostgreSQL automatically when `DATABASE_URL` is set; locally it keeps using SQLite.
+**Cost:** ₹0. Neither service needs a card.
 
-**Free-tier facts worth knowing:**
-- Render's free service **sleeps after 15 minutes idle** and takes about a minute to wake up. This doesn't break the edge node: it keeps detections locally and retries until the server is awake.
-- Neon's free plan has 1 GB of storage, which is plenty: each pothole report is about 100 bytes.
+**Time:** about 45 minutes the first time.
 
-## 1. Put the project on GitHub (5 min)
+**Accounts you'll create:** GitHub, Neon and Render. You can sign up for Neon and Render using your GitHub account.
 
-1. Install **GitHub Desktop** and sign in.
-2. Choose File → *Add local repository…* and pick your `EcoRoads` folder. When it says "not a repository", click **create a repository** there.
-3. Check the file list. `venv`, databases, `sessions`, `certs` and `*.pt` must **not** appear; `.gitignore` already excludes them.
-4. Click **Commit to main**, then **Publish repository**. Private is fine.
+**Write these down as you go** (a notes file, *not* inside the project folder):
 
-## 2. Create the database on Neon (3 min)
+| Name | Example | Comes from |
+|---|---|---|
+| Neon connection string | `postgresql://neondb_owner:…@ep-…neon.tech/neondb?sslmode=require` | Step 2 |
+| App address | `https://ecoroads-ab12.onrender.com` | Step 3 |
+| Admin key | long random text | Step 3 (keep secret: only you) |
+| Vehicle key | long random text | Step 3 (give to vehicle laptops) |
+| Ward private links | `https://…/?muni=ward_a&lock=1#token=…` | Step 5 (one per ward) |
 
-1. Sign up at [neon.com](https://neon.com). No card is needed.
-2. Create a project. Pick the region closest to you (e.g. *Asia Pacific – Singapore*).
-3. Open **Connect** and copy the connection string. It looks like `postgresql://user:password@ep-xxx.ap-southeast-1.aws.neon.tech/neondb?sslmode=require`.
+---
 
-## 3. Deploy on Render (5 min + build time)
+## Step 0: Check the project is ready (2 min)
 
-1. Sign up at [render.com](https://render.com) using your GitHub account.
-2. Choose **New → Blueprint** and select your EcoRoads repository. Render reads `render.yaml`.
-3. When it asks for values:
-   - `DATABASE_URL`: paste the Neon string.
-   - `ECOROADS_EDGE_DOWNLOAD_URL`: leave empty. The zip is served from the repo, see step 5.
-4. Click **Apply** and wait for the build (~5 min), until the service shows **Live**.
-5. Open the service → **Environment** and reveal the two keys Render generated:
-   - `ECOROADS_ADMIN_KEY`: for you only. It's needed to register municipalities.
-   - `ECOROADS_INGEST_KEY`: give it to vehicle operators.
+1. Open the `EcoRoads` folder in File Explorer. These must exist:
+   - `render.yaml`
+   - `.gitignore`
+   - `ecoroads-cloud\Dockerfile`
+   - `ecoroads-dashboard\index.html`
+2. Make sure there is no `config.json` containing a real API key that you'd want kept private. It's git-ignored anyway.
 
-**Check:** open `https://<your-app>.onrender.com/api/health`. It should show `{"status":"ok",…}`.
+## Step 1: Put the project on GitHub (10 min)
 
-## 4. Register the municipalities (2 min each)
+Render deploys from a GitHub repository. GitHub Desktop is the easiest way to get it there.
 
-1. Open `https://<your-app>.onrender.com/` and fill the registration form:
-   - click the map to set the centre
-   - enter an ID (`ward_a`), a name and a radius
-   - enter the **admin key**
-2. Click **Register Boundary**. The page shows that municipality's **private link** (`…?muni=ward_a&lock=1#token=…`):
-   - Send it to Ward A's staff. It opens their locked dashboard and lets them mark repairs.
-   - The token is shown **only once**; the server stores just a hash of it.
-   - If it's lost, register the same ID again: that issues a new token and the old one stops working.
-3. Repeat for `ward_b`.
+1. Create a GitHub account at **github.com** if you don't have one. Use your personal email, not your college one.
+2. Download **GitHub Desktop** from **desktop.github.com**, install it, and sign in: *File → Options → Accounts → Sign in*.
+3. Click **File → Add local repository…**, then **Choose…** and select `C:\Users\HP\OneDrive\Desktop\EcoRoads`. Click **Add repository**.
+4. It says *"This directory does not appear to be a Git repository."* Click the blue **create a repository** link in that message.
+5. In the *Create a New Repository* window:
+   - **Name:** `EcoRoads`
+   - **Git ignore:** **None**. The project already has its own `.gitignore`; choosing a template would overwrite it.
+   - **License:** None
+   - Click **Create repository**.
+6. Check the **Changes** list on the left:
+   - **Should appear:** `render.yaml`, `ecoroads-cloud/…`, `ecoroads-dashboard/…`, `ecoroads-edge/src/…`
+   - **Must NOT appear:** `venv`, `.db` files, `sessions`, `certs`, `datasets`, `runs`, `.pt` files. If any of these do appear, stop and tell me.
+7. Bottom-left: in **Summary**, type `Initial commit`, then click **Commit to main**.
+8. Click **Publish repository** at the top. Tick **Keep this code private** if you like; Render works with private repositories. Click **Publish repository**.
+9. **Check:** click *Repository → View on GitHub*. You should see the folders in your browser.
 
-**Who can do what:**
-- **Anyone** can view hazards; it's civic data.
-- **Only the admin key** can register municipalities.
-- **Only that municipality's token** can mark its repairs.
-- **Only vehicles with the ingest key** can upload.
+## Step 2: Create the database on Neon (5 min)
 
-## 5. Publish the edge node download
+1. Go to **neon.com** → **Sign up** → **Continue with GitHub**.
+2. Create a project:
+   - **Project name:** `ecoroads`
+   - **Postgres version:** leave the default
+   - **Region:** **AWS Asia Pacific 1 (Singapore)**, the same region as the server in Step 3
+   - Click **Create project**.
+3. On the project dashboard, click **Connect** (top right).
+4. In the *Connect to your database* window:
+   - Branch `production` (or `main`), database `neondb`, role `neondb_owner`.
+   - The **Connection pooling** toggle can stay on or off; the app works with both.
+   - Click **Show password**, then **Copy snippet**. Paste it into your notes as the **Neon connection string**.
+   - It must start with `postgresql://` and contain `sslmode=require`.
 
-After training (`models/best.pt` exists), on your laptop:
+You don't need to create any tables. The app creates them itself on first start.
 
-```
-ecoroads-edge\venv\Scripts\python tools\build_edge_package.py --cloud-url https://<your-app>.onrender.com
-```
+## Step 3: Deploy on Render (10 min + ~6 min build)
 
-This writes `ecoroads-dashboard\downloads\EcoRoads-Edge.zip`, which contains the code, your trained model, the installer and the server address. It does **not** contain the vehicle key, because the zip is public.
+1. Go to **render.com** → **Get Started** → **GitHub**, and authorise Render.
+2. In the Render dashboard, click **+ New** (top right), then **Blueprint**.
+3. Under *Connect a repository*:
+   - If EcoRoads isn't listed, click **Configure GitHub** (or *Connect account*).
+   - On GitHub's page, choose **Only select repositories → EcoRoads → Install / Save**.
+   - Back on Render, click **Connect** next to **EcoRoads**.
+4. On the blueprint page:
+   - **Blueprint Name:** `ecoroads`. **Branch:** `main`.
+   - Render lists the service from `render.yaml`: **ecoroads**, *Web Service, Docker, Free, Singapore*.
+   - In the **DATABASE_URL** box, paste the Neon connection string.
+   - Click **Deploy Blueprint** (or **Apply**).
+5. Click the **ecoroads** service, then **Events** or **Logs**, and watch the build. It takes ~5–8 minutes. It's done when you see:
+   ```
+   Application startup complete.
+   ==> Your service is live 🎉
+   ```
+6. At the top of the service page is its address, e.g. `https://ecoroads-ab12.onrender.com`. Save it as your **App address**.
+7. Open **Environment** in the left menu. You'll see `ECOROADS_ADMIN_KEY` and `ECOROADS_INGEST_KEY`, which Render generated:
+   - Click the **eye** icon on each and copy the value.
+   - Save them as **Admin key** and **Vehicle key**.
 
-Commit and push it with GitHub Desktop. Render redeploys automatically, and the dashboard header shows **⬇ Edge node**.
+> **Is it normal that the free service sleeps?** Yes. It sleeps after 15 minutes with no visitors, and the next visit takes about a minute to wake it. Vehicles simply keep their potholes and retry, so nothing is lost.
 
-Every time you retrain the model or change the edge code, run the same command again and push.
+## Step 4: Verify the deployment (2 min)
 
-## 6. Set up a vehicle laptop (any Windows laptop)
+1. In a browser, open `https://<your-app>.onrender.com/api/health`. You should see something like `{"status":"ok","raw_hazard_count":0,"municipality_count":0}`.
+2. For the full automatic check, run this on your laptop from the `EcoRoads` folder:
+   ```
+   ecoroads-edge\venv\Scripts\python tools\deploy_check.py https://<your-app>.onrender.com --api-key <Vehicle key>
+   ```
+   Every line should say **PASS**. The edge node download shows WARN until Step 6, which is expected.
 
-1. Install **Python 3.12** from python.org and tick *Add python.exe to PATH*.
-2. Download **EcoRoads-Edge.zip** from the dashboard, then extract it.
-3. Double-click **INSTALL.bat**, about 3 GB of downloads:
-   - It detects an NVIDIA GPU automatically: CUDA build if there is one, CPU build if not.
-   - It asks for a vehicle ID (e.g. `bus_12`). The server address is already filled in.
-   - It asks for the vehicle key, which is the `ECOROADS_INGEST_KEY`.
-4. On every drive, run **START_DRIVE.bat** and connect the phone as described in `PHONE_SETUP.md`, which is included in the zip.
+## Step 5: Register the municipalities (3 min each)
 
-## Updating the server
+1. Open `https://<your-app>.onrender.com/`. The map loads, and the left panel shows *Register your municipality* with an **Admin key** field.
+2. Fill in the form for Ward A:
+   - Click on the map at the centre of Ward A's area. A dashed circle appears.
+   - **Municipality ID:** `ward_a`. Letters, digits, `_` and `-` only.
+   - **Display name:** e.g. `Ward A Municipality`.
+   - **Radius:** e.g. `300` metres. The circle grows as you type.
+   - **Admin key:** paste it.
+   - Click **Register Boundary**.
+3. A green box shows **Your municipality's private link**:
+   - Click **Copy link** and save it in your notes. It's shown **only once**.
+   - Send it to Ward A's staff, or open it on Ward A's laptop. It opens their locked dashboard, showing only their area, and lets them **Mark repaired**.
+4. Repeat for **ward_b**, in a different area.
 
-Push to GitHub and Render redeploys on its own. The data in Neon is untouched.
+**If a link is lost:** register the same ID again with the same details. That creates a new link, and the old one stops working.
 
-## Running the same container elsewhere
+## Step 6: Publish the edge node download (5 min, after training)
 
-- **Locally:** `docker compose up --build`.
-- **Any VM:** run the following from the repo root, then open port 9000.
+This step needs your trained model at `ecoroads-edge\models\best.pt`.
+
+1. On your laptop, from the `EcoRoads` folder:
+   ```
+   ecoroads-edge\venv\Scripts\python tools\build_edge_package.py --cloud-url https://<your-app>.onrender.com
+   ```
+   You should see `Built ...\ecoroads-dashboard\downloads\EcoRoads-Edge.zip (~10 MB)` with no WARNING about the model.
+2. In GitHub Desktop, the changes list shows `ecoroads-dashboard/downloads/EcoRoads-Edge.zip`. Type the summary `Publish edge node`, click **Commit to main**, then **Push origin**.
+3. Render notices the push and redeploys automatically (~5 min, watch **Events**).
+4. Reload the dashboard. **⬇ Edge node** now appears in the header. Run `deploy_check.py` again: everything should PASS.
+
+**When you retrain the model or change the edge code:** repeat 1–2.
+
+## Step 7: Set up a vehicle laptop (20 min, mostly downloading)
+
+On any Windows laptop that will ride in a car:
+
+1. Install **Python 3.12** from **python.org/downloads**. On the first installer screen, tick **"Add python.exe to PATH"**.
+2. Open your app address, click **⬇ Edge node**, and save **EcoRoads-Edge.zip**. Right-click it → **Extract All…** to e.g. `C:\EcoRoads-Edge`. Keep it outside OneDrive.
+3. Double-click **INSTALL.bat** and answer the questions:
+   - **Vehicle ID:** unique per car, e.g. `bus_12`.
+   - **Server address:** already filled in. Just press Enter.
+   - **Vehicle API key:** paste the **Vehicle key**.
+   - It finishes with a **check_env** report. You want to see GPU OK if the laptop has an NVIDIA card; CPU also works, just slower.
+4. Every drive:
+   - Connect the laptop to the phone's hotspot.
+   - Run **START_DRIVE.bat**.
+   - On the phone, open the `https://…:8443` address it prints and tap **Start streaming**. Full details are in `PHONE_SETUP.md`, which is inside the zip.
+   - Allow Python through Windows Firewall, ticking **Private and Public**.
+5. The sync window shows `synced N hazard(s)`. The potholes appear on the right ward's dashboard within seconds, or a minute if the server was asleep.
+
+## Step 8: Day-to-day
+
+- **Change server code:** edit, commit and push in GitHub Desktop. Render redeploys by itself, and the database is untouched.
+- **See server errors:** Render → ecoroads → **Logs**.
+- **Look at the data directly:** Neon → **Tables** (or the **SQL Editor**: `SELECT * FROM hazards ORDER BY id DESC LIMIT 20;`).
+- **Demo data on the live server, optional:**
   ```
-  docker build -f ecoroads-cloud/Dockerfile -t ecoroads .
-  docker run -p 9000:9000 -e DATABASE_URL=… -e ECOROADS_ADMIN_KEY=… ecoroads
+  python tools\simulate_fleet.py --cloud https://<your-app>.onrender.com --admin-key <Admin key> --api-key <Vehicle key>
   ```
+  This creates `ward_a`/`ward_b`/`ward_c` and **gives them new links**. So run it **before** Step 5, or only on a separate test deployment.
+- **A key leaked?** Render → Environment → edit the key → **Save, rebuild and deploy**. Then re-run `setup_config.py` on vehicles with the new vehicle key.
 
 ## Troubleshooting
 
-| Problem | Fix |
+| What you see | Cause and fix |
 |---|---|
-| Render build fails on `psycopg` | Make sure `ecoroads-cloud/requirements.txt` has `psycopg[binary]`. Check the build log. |
-| `/api/health` errors with "connection refused / SSL" | The `DATABASE_URL` must be the full Neon string including `?sslmode=require`. |
-| First page load takes ~1 minute | The free service was asleep. That's normal. |
-| Vehicle sync says 401 | The vehicle key is wrong. Re-run `ecoroads-edge\venv\Scripts\python ecoroads-edge\setup_config.py`. |
-| Want demo data on the live server? | `python tools\simulate_fleet.py --cloud https://<your-app>.onrender.com --admin-key … --api-key …`. Note it (re)registers `ward_a`/`ward_b`/`ward_c`, which issues them new tokens, so use it before handing out real ward links. |
-| "Mark repaired" asks for a token | Open the municipality's private link (with `#token=`), or paste the token when asked. |
+| Render build log: `failed to read dockerfile` | The blueprint needs `dockerfilePath: ./ecoroads-cloud/Dockerfile` and `dockerContext: .`. Make sure `render.yaml` was pushed. |
+| Logs: `connection ... failed` / `password authentication failed` | DATABASE_URL is wrong. Copy it again from Neon (with **Show password** on), then Render → Environment → edit → save. |
+| Logs: `SSL ... required` | The URL is missing `?sslmode=require`. Use Neon's full string. |
+| `/api/health` keeps loading for ~1 min | The service was asleep. That's normal on the free plan. |
+| Dashboard: "Not registered: admin key required" | Wrong admin key. Copy it again from Render → Environment. |
+| Vehicle sync window: `cloud rejected our API key` | Wrong vehicle key. Run `ecoroads-edge\venv\Scripts\python ecoroads-edge\setup_config.py` in the EcoRoads-Edge folder. |
+| Vehicle sync: `[offline] cloud unreachable` for a minute, then OK | The server was waking up. Nothing is lost. |
+| "Mark repaired" asks for a token | You opened the plain address, not the ward's private link. Use the link with `#token=`, or paste the token. |
+| No **⬇ Edge node** link | The zip wasn't pushed, or Render hasn't finished redeploying. Check GitHub for `ecoroads-dashboard/downloads/EcoRoads-Edge.zip`. |
+
+## Running the same container elsewhere (optional)
+
+The Render setup is just a Docker container, so it runs on any machine with Docker.
+
+- **On your laptop:** run `docker compose up --build`, then open `http://localhost:9000`.
+- **On any VM:** from the repo root, run:
+  ```
+  docker build -f ecoroads-cloud/Dockerfile -t ecoroads .
+  docker run -p 9000:9000 -e DATABASE_URL=... -e ECOROADS_ADMIN_KEY=... -e ECOROADS_INGEST_KEY=... ecoroads
+  ```

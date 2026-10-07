@@ -47,16 +47,22 @@ def main():
 
     print(f"Checking {base} (waking it up if it's asleep)…")
     start = time.time()
-    status = None
+    status, path = None, "/api/ping"
     while time.time() - start < 120:
         try:
-            status, _ = call(f"{base}/api/ping", timeout=60)
+            status, _ = call(f"{base}{path}", timeout=60)
             if status == 200:
                 break
-        except Exception:
-            pass
+            if status == 404 and path == "/api/ping":
+                # older server version without /api/ping: it is awake, just not up to date
+                warn("server version", "no /api/ping — your latest code isn't deployed yet "
+                                       "(commit + push in GitHub Desktop, then wait for Render to redeploy)")
+                path = "/api/health"
+                continue
+        except Exception as e:
+            print(f"  still waiting ({type(e).__name__})…")
         time.sleep(3)
-    check("server is up (/api/ping)", status == 200, f"{time.time() - start:.0f} s")
+    check(f"server is up ({path})", status == 200, f"{time.time() - start:.0f} s")
     if status != 200:
         sys.exit("Server not reachable — check the Render logs.")
 

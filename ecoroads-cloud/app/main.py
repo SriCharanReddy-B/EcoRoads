@@ -158,6 +158,13 @@ def create_repair(municipality_id: str, r: RepairIn,
     return {"status": "recorded", "repair": repair}
 
 
+@app.get("/api/ping")
+def ping():
+    """Liveness only — doesn't touch the database. Render's health checks use this,
+    so they don't keep a free Neon database awake (and burning its monthly hours)."""
+    return {"status": "ok"}
+
+
 @app.get("/api/health")
 def health():
     return {"status": "ok", "raw_hazard_count": service.count_hazards(),
