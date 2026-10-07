@@ -1,0 +1,7 @@
+{
+  "vehicle_id": "car_01",
+  "source": "phone",
+  "cloud_url": "http://localhost:9000",
+  "api_key": "",
+  "camera_lookahead_m": 6.0
+}

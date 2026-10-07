@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1117">
+<title>EcoRoads Phone Sensor</title>
+<style>
+  :root { --bg:#0f1117; --panel:#1a1d27; --text:#e8e9ed; --muted:#8b8fa3; --ok:#6fcf97; --bad:#ff8a80; --warn:#e0c46c; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--text);
+    font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  .wrap { display:flex; flex-direction:column; height:100%; padding:12px; gap:10px; }
+  h1 { font-size:17px; margin:0; }
+  .sub { color:var(--muted); font-size:13px; }
+  #preview { width:100%; flex:1; min-height:0; object-fit:contain; background:#000; border-radius:10px; }
+  .grid { display:grid; grid-template-columns:repeat(2,1fr); gap:8px; }
+  .tile { background:var(--panel); border-radius:10px; padding:10px; }
+  .tile .k { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+  .tile .v { font-size:17px; font-weight:700; margin-top:2px; }
+  .ok { color:var(--ok); } .bad { color:var(--bad); } .warn { color:var(--warn); }
+  button { width:100%; padding:16px; font-size:17px; font-weight:700; border:0; border-radius:12px;
+    background:#3b5bdb; color:#fff; }
+  button.stop { background:#5c1a1a; }
+  #laptop { background:var(--panel); border-radius:10px; padding:10px; font-size:14px; }
+  #log { font-size:12px; color:var(--muted); min-height:1.2em; }
+  @media (orientation: landscape) {
+    .wrap { flex-direction:row; }
+    .side { width:42%; display:flex; flex-direction:column; gap:10px; overflow:auto; }
+    #preview { height:100%; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <video id="preview" playsinline muted autoplay></video>
+  <div class="side">
+    <div>
+      <h1>EcoRoads phone sensor</h1>
+      <div class="sub">Rear camera + GPS + motion → laptop. Keep this screen open while driving.</div>
+    </div>
+    <div class="grid">
+      <div class="tile"><div class="k">Camera</div><div class="v" id="sCam">—</div></div>
+      <div class="tile"><div class="k">Sent to laptop</div><div class="v" id="sFps">—</div></div>
+      <div class="tile"><div class="k">GPS</div><div class="v" id="sGps">—</div></div>
+      <div class="tile"><div class="k">Motion</div><div class="v" id="sMotion">—</div></div>
+    </div>
+    <div id="laptop">Laptop: not connected yet</div>
+    <button id="startBtn">Start streaming</button>
+    <div id="log"></div>
+  </div>
+</div>
+<canvas id="canvas" style="display:none"></canvas>
+
+<script>
+// ---- settings come from the laptop (config.json), these are fallbacks ----
+let CFG = { width: 960, jpeg_quality: 0.7, max_fps: 15, vehicle_id: "car_01" };
+
+const $ = id => document.getElementById(id);
+const video = $('preview'), canvas = $('canvas'), ctx = canvas.getContext('2d');
+let running = false, wakeLock = null, stream = null, gpsWatch = null;
+let gpsBuf = [], motionBuf = [], sentTimes = [];
+let lastMotionAt = 0;
+
+// One clock for everything we send: milliseconds, monotonic within this page.
+// The laptop maps it onto its own clock (timesync.py).
+const nowMs = () => performance.timeOrigin + performance.now();
+
+function log(msg) { $('log').textContent = msg; }
+function set(id, text, cls) { const el = $(id); el.textContent = text; el.className = 'v ' + (cls || ''); }
+
+async function loadConfig() {
+  try { CFG = { ...CFG, ...(await (await fetch('/config.json', {cache: 'no-store'})).json()) }; } catch (e) {}
+}
+
+// ---------------- camera -> laptop ----------------
+async function startCamera() {
+  stream = await navigator.mediaDevices.getUserMedia({
+    audio: false,
+    video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 },
+             frameRate: { ideal: 30 } }
+  });
+  video.srcObject = stream;
+  await video.play();
+  const s = stream.getVideoTracks()[0].getSettings();
+  set('sCam', `${s.width}×${s.height}`, 'ok');
+}
+
+function grabJpeg() {
+  const w = CFG.width, h = Math.round(w * video.videoHeight / video.videoWidth);
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  const t = nowMs();
+  ctx.drawImage(video, 0, 0, w, h);
+  return new Promise(res => canvas.toBlob(b => res([b, t]), 'image/jpeg', CFG.jpeg_quality));
+}
+
+async function frameLoop() {
+  const minGap = 1000 / CFG.max_fps;
+  while (running) {
+    const started = performance.now();
+    try {
+      if (video.readyState >= 2) {
+        const [blob, t] = await grabJpeg();
+        // Wait for the laptop's answer before sending the next frame (back-pressure).
+        const r = await fetch('/frame', { method: 'POST', body: blob,
+          headers: { 'Content-Type': 'image/jpeg', 'X-Capture-Ts': String(t) } });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        sentTimes.push(performance.now()); if (sentTimes.length > 30) sentTimes.shift();
+      }
+    } catch (e) {
+      set('sFps', 'laptop?', 'bad'); log('Frame upload failed: ' + e.message + ' — retrying');
+      await sleep(1000);
+    }
+    const spent = performance.now() - started;
+    if (spent < minGap) await sleep(minGap - spent);
+  }
+}
+
+// ---------------- GPS ----------------
+function startGps() {
+  if (!('geolocation' in navigator)) { set('sGps', 'unsupported', 'bad'); return; }
+  gpsWatch = navigator.geolocation.watchPosition(p => {
+    const c = p.coords;
+    gpsBuf.push({ t: nowMs(), lat: c.latitude, lon: c.longitude,
+                  speed: (c.speed === null || isNaN(c.speed)) ? null : c.speed,
+                  accuracy: c.accuracy, heading: c.heading });
+    const kmh = c.speed ? ` · ${(c.speed * 3.6).toFixed(0)} km/h` : '';
+    set('sGps', `±${Math.round(c.accuracy)} m${kmh}`, c.accuracy <= 15 ? 'ok' : c.accuracy <= 30 ? 'warn' : 'bad');
+  }, err => {
+    set('sGps', err.code === 1 ? 'denied' : 'searching…', 'bad');
+  }, { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 });
+}
+
+// ---------------- accelerometer ----------------
+async function startMotion() {
+  if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
+    try { if (await DeviceMotionEvent.requestPermission() !== 'granted') { set('sMotion', 'denied', 'bad'); return; } }
+    catch (e) { set('sMotion', 'denied', 'bad'); return; }   // iPhone needs the tap-to-allow prompt
+  }
+  window.addEventListener('devicemotion', e => {
+    const a = e.accelerationIncludingGravity;
+    if (!a || a.x === null) return;
+    const g = 9.80665;
+    motionBuf.push([nowMs(), a.x / g, a.y / g, a.z / g]);
+    if (motionBuf.length > 3000) motionBuf.splice(0, motionBuf.length - 3000);
+    lastMotionAt = performance.now();
+  });
+}
+
+// ---------------- sensors -> laptop every 250 ms ----------------
+async function sensorLoop() {
+  while (running) {
+    await sleep(250);
+    if (!gpsBuf.length && !motionBuf.length) continue;
+    const gps = gpsBuf, motion = motionBuf;
+    gpsBuf = []; motionBuf = [];
+    try {
+      const r = await fetch('/sensors', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                          body: JSON.stringify({ gps, motion }) });
+      if (!r.ok) throw new Error(r.status);
+    } catch (e) {
+      // keep the data and try again next time (bounded so memory can't grow forever)
+      gpsBuf = gps.concat(gpsBuf).slice(-200);
+      motionBuf = motion.concat(motionBuf).slice(-3000);
+    }
+  }
+}
+
+// ---------------- status from the laptop ----------------
+async function statusLoop() {
+  while (running) {
+    try {
+      const s = await (await fetch('/status', { cache: 'no-store' })).json();
+      $('laptop').innerHTML = `Laptop: <b class="ok">receiving ${s.fps} fps</b> · ${s.status}`;
+    } catch (e) {
+      $('laptop').innerHTML = '<span class="bad">Laptop not reachable</span> — same Wi-Fi/hotspot? detector running?';
+    }
+    if (sentTimes.length > 1) {
+      const fps = (sentTimes.length - 1) * 1000 / (sentTimes.at(-1) - sentTimes[0]);
+      set('sFps', `${fps.toFixed(1)} fps`, fps >= 5 ? 'ok' : 'warn');
+    }
+    const motionOk = performance.now() - lastMotionAt < 2000;
+    if ($('sMotion').textContent !== 'denied') set('sMotion', motionOk ? 'live' : 'no data', motionOk ? 'ok' : 'warn');
+    await sleep(2000);
+  }
+}
+
+// ---------------- keep the screen awake ----------------
+async function keepAwake() {
+  try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && running) keepAwake();
+  else if (running) log('Screen hidden — the browser pauses the camera. Keep this page on screen.');
+});
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+$('startBtn').addEventListener('click', async () => {
+  const btn = $('startBtn');
+  if (running) {
+    running = false;
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    if (gpsWatch !== null) navigator.geolocation.clearWatch(gpsWatch);
+    if (wakeLock) wakeLock.release();
+    btn.textContent = 'Start streaming'; btn.className = '';
+    return;
+  }
+  if (!window.isSecureContext) { log('This page must be opened over https:// for camera/GPS.'); return; }
+  try {
+    await loadConfig();
+    await startMotion();          // must be first: iPhone asks permission only inside a tap
+    await startCamera();
+    startGps();
+    await keepAwake();
+    running = true;
+    btn.textContent = 'Stop'; btn.className = 'stop';
+    log(`Streaming as ${CFG.vehicle_id}. Mount the phone in landscape, lens clear of wipers.`);
+    frameLoop(); sensorLoop(); statusLoop();
+  } catch (e) {
+    set('sCam', 'blocked', 'bad');
+    log('Could not start: ' + e.message + ' (allow camera & location for this site)');
+  }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+ultralytics>=8.2.0
+opencv-python>=4.9.0
+numpy>=1.26.0
+requests>=2.31.0
+gpxpy>=1.6.0
+pyserial>=3.5
+cryptography>=42.0      # HTTPS certificate for the phone bridge
+pytest>=8.0
+# training only (Roboflow dataset download):
+# roboflow>=1.1

@@ -1,0 +1,24 @@
+# Runs the server side (cloud API + dashboard) with one command:
+#   docker compose up --build
+# Dashboard: http://localhost:9000 (served by the API) or :8080   API docs: http://localhost:9000/docs
+# Edge nodes stay on the vehicle laptops (they need the webcam, GPU and sensors)
+# and point their config.json "cloud_url" at this machine's IP, port 9000.
+services:
+  cloud:
+    build:
+      context: .
+      dockerfile: ecoroads-cloud/Dockerfile
+    ports: ["9000:9000"]
+    environment:
+      - ECOROADS_INGEST_KEY=${ECOROADS_INGEST_KEY:-}
+    volumes:
+      - ecoroads-data:/data
+    restart: unless-stopped
+  dashboard:
+    image: nginx:alpine
+    ports: ["8080:80"]
+    volumes:
+      - ./ecoroads-dashboard:/usr/share/nginx/html:ro
+    depends_on: [cloud]
+volumes:
+  ecoroads-data:

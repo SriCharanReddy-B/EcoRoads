@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>EcoRoads — Municipality Dashboard</title>
+<!-- Leaflet: local copy first (works without internet after tools/fetch_offline_assets.py),
+     falling back to the CDN. Map tiles themselves still need internet. -->
+<link rel="stylesheet" href="vendor/leaflet.css"
+      onerror="this.onerror=null;this.href='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'" />
+<script src="vendor/leaflet.js"></script>
+<script>window.L || document.write('<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"><\/script>')</script>
+<style>
+  :root {
+    --critical: #d32f2f; --high: #f57c00; --medium: #fbc02d; --low: #388e3c;
+    --bg: #0f1117; --panel: #1a1d27; --text: #e8e9ed; --muted: #8b8fa3;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: var(--bg); color: var(--text); height: 100vh; overflow: hidden; }
+  header { padding: 14px 20px; background: var(--panel); border-bottom: 1px solid #2a2e3d;
+    display: flex; justify-content: space-between; align-items: center; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  .controls { display: flex; gap: 10px; align-items: center; font-size: 13px; }
+  select, button, input {
+    background: #232635; color: var(--text); border: 1px solid #33374a;
+    border-radius: 6px; padding: 6px 10px; font-size: 13px; }
+  button { cursor: pointer; }
+  button:hover { background: #2c3042; }
+  button.primary { background: #3b5bdb; border-color: #3b5bdb; }
+  button.primary:hover { background: #4c6ef5; }
+  .layout { display: flex; height: calc(100vh - 53px); }
+  #map { flex: 1; }
+  #sidebar { width: 360px; background: var(--panel); overflow-y: auto; border-left: 1px solid #2a2e3d; }
+  .panel-section { padding: 16px; border-bottom: 1px solid #2a2e3d; }
+  .panel-section h3 { margin: 0 0 10px 0; font-size: 13px; color: var(--muted); text-transform: uppercase; }
+  .field { margin-bottom: 8px; }
+  .field label { display:block; font-size:11px; color: var(--muted); margin-bottom: 3px; }
+  .field input { width: 100%; }
+  .stat-row { display: flex; padding: 14px 16px; gap: 10px; border-bottom: 1px solid #2a2e3d; }
+  .stat { flex: 1; text-align: center; }
+  .stat .num { font-size: 20px; font-weight: 700; }
+  .stat .label { font-size: 11px; color: var(--muted); text-transform: uppercase; }
+  .hazard-card { padding: 12px 16px; border-bottom: 1px solid #2a2e3d; }
+  .hazard-card .top-row { display: flex; justify-content: space-between; align-items: center; }
+  .severity-badge { white-space: nowrap; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 10px; color: #fff; }
+  .hazard-card .meta { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .empty-state { padding: 24px 16px; text-align: center; color: var(--muted); font-size: 13px; }
+  .hint { font-size: 12px; color: var(--muted); line-height: 1.5; margin-top: 6px; }
+  .status-msg { font-size: 12px; padding: 6px 10px; border-radius: 6px; margin-top: 8px; }
+  .status-msg.ok { background: #1b3a2b; color: #6fcf97; }
+  .status-msg.err { background: #3a1b1b; color: #ff8a80; }
+  .tag { white-space: nowrap; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 8px; margin-left: 6px;
+    text-transform: uppercase; letter-spacing: .03em; }
+  .tag.reopened { background: #5c1a1a; color: #ff8a80; }
+  .tag.unverified { background: #3a3320; color: #e0c46c; }
+  .card-actions { margin-top: 8px; display: flex; gap: 8px; }
+  .card-actions button { font-size: 12px; padding: 4px 8px; }
+  .repaired-card { padding: 10px 16px; border-bottom: 1px solid #2a2e3d; font-size: 12px; color: var(--muted); }
+  #connBadge { font-size: 11px; padding: 3px 8px; border-radius: 10px; background: #3a1b1b; color: #ff8a80; }
+  #connBadge.ok { background: #1b3a2b; color: #6fcf97; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1 id="title">🛣️ EcoRoads — Municipality Dashboard</h1>
+  <div class="controls">
+    <select id="muniSelect"><option value="">Select municipality…</option></select>
+    <button id="refreshBtn">Refresh</button>
+    <a id="downloadEdge" href="#" style="display:none;font-size:12px;color:#9db4ff" target="_blank" rel="noopener">⬇ Edge node</a>
+    <span id="connBadge">offline</span>
+  </div>
+</header>
+
+<div class="layout">
+  <div id="map"></div>
+  <div id="sidebar">
+
+    <div class="panel-section" id="registerPanel">
+      <h3>Register your municipality</h3>
+      <div class="hint">Click a point on the map to set your boundary's center, then set a radius. This defines the circle within which detected potholes are routed to you.</div>
+      <div class="field"><label>Municipality ID (unique, no spaces)</label><input id="muniId" placeholder="e.g. ward_a"></div>
+      <div class="field"><label>Display name</label><input id="muniName" placeholder="e.g. Ward A Municipality"></div>
+      <div class="field"><label>Center (click map to set)</label><input id="muniCenter" readonly placeholder="click map…"></div>
+      <div class="field"><label>Radius (meters)</label><input id="muniRadius" type="number" value="300" min="50" max="2000"></div>
+      <div class="field" id="adminField" style="display:none"><label>Admin key (from whoever runs the server)</label><input id="adminKey" type="password" autocomplete="off"></div>
+      <button class="primary" id="registerBtn" style="width:100%;margin-top:6px;">Register Boundary</button>
+      <div id="registerStatus"></div>
+    </div>
+
+    <div class="stat-row">
+      <div class="stat"><div class="num" id="statTotal">0</div><div class="label">Hazards</div></div>
+      <div class="stat"><div class="num" id="statCritical" style="color:var(--critical)">0</div><div class="label">Critical</div></div>
+      <div class="stat"><div class="num" id="statHigh" style="color:var(--high)">0</div><div class="label">High</div></div>
+      <div class="stat"><div class="num" id="statReopened" style="color:#ff8a80">0</div><div class="label">Reopened</div></div>
+      <div class="stat"><div class="num" id="statRepaired" style="color:var(--low)">0</div><div class="label">Repaired</div></div>
+    </div>
+    <div id="hazardList"></div>
+  </div>
+</div>
+
+<script>
+// URL options (no need to edit this file):
+//   ?api=http://192.168.1.20:9000   cloud service location
+//   &muni=ward_a                    pre-select a municipality
+//   &refresh=3                      auto-refresh every N seconds (default 10)
+//   &lock=1                         "municipal laptop" mode: fixed to &muni, no switching,
+//                                   no registering, only this municipality's boundary drawn
+const PARAMS = new URLSearchParams(location.search);
+const LOCKED = PARAMS.get('lock') === '1' && !!PARAMS.get('muni');
+if (LOCKED) {
+  document.getElementById('registerPanel').style.display = 'none';
+  document.getElementById('muniSelect').style.display = 'none';
+}
+function defaultApi() {
+  if (location.protocol === 'file:') return 'http://localhost:9000';                 // opened from disk
+  if (location.port === '8080') return `${location.protocol}//${location.hostname}:9000`; // local http.server
+  return location.origin;                                                            // served by the cloud itself
+}
+const CLOUD_URL = (PARAMS.get('api') || defaultApi()).replace(/\/$/, '');
+
+// ---- municipality access tokens (needed to mark repairs on a secured server) ----
+// A locked link carries the token after '#', which browsers never send to servers.
+const HASH = new URLSearchParams(location.hash.slice(1));
+function tokenStore() { try { return JSON.parse(localStorage.getItem('ecoroads_tokens') || '{}'); } catch (e) { return {}; } }
+function saveToken(muni, token) {
+  try { const t = tokenStore(); t[muni] = token; localStorage.setItem('ecoroads_tokens', JSON.stringify(t)); } catch (e) {}
+}
+function getToken(muni) { return (HASH.get('token') && PARAMS.get('muni') === muni) ? HASH.get('token') : tokenStore()[muni]; }
+
+let SERVER = { secure: false, edge_download_url: null };
+async function loadServerConfig() {
+  try {
+    SERVER = await (await fetch(`${CLOUD_URL}/api/config`)).json();
+    document.getElementById('adminField').style.display = SERVER.secure ? '' : 'none';
+  } catch (e) {}
+  // Edge-node download: an explicit URL from the server, else the zip shipped with the dashboard
+  const dl = document.getElementById('downloadEdge');
+  let url = SERVER.edge_download_url;
+  if (!url) {
+    try { if ((await fetch('downloads/EcoRoads-Edge.zip', { method: 'HEAD' })).ok) url = 'downloads/EcoRoads-Edge.zip'; }
+    catch (e) {}
+  }
+  if (url) { dl.href = url; dl.style.display = ''; }
+}
+const REFRESH_S = Math.max(1, parseFloat(PARAMS.get('refresh')) || 10);
+let preselect = PARAMS.get('muni');
+
+function esc(v) {  // never inject API data into HTML unescaped
+  return String(v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function fmtTime(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return isNaN(d) ? iso : d.toLocaleString();
+}
+function setConn(ok) {
+  const b = document.getElementById('connBadge');
+  b.textContent = ok ? 'cloud connected' : 'cloud offline';
+  b.className = ok ? 'ok' : '';
+}
+const TIER_HEX = { Critical: "#d32f2f", High: "#f57c00", Medium: "#fbc02d", Low: "#388e3c" };
+
+const map = L.map('map').setView([17.408, 78.479], 15);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '&copy; OpenStreetMap contributors', maxZoom: 19
+}).addTo(map);
+
+let hazardMarkers = [];
+let boundaryCircles = {};   // municipality_id -> L.circle
+let pendingCenter = null;   // {lat, lon} clicked while registering
+
+// --- Registration: click map to set center ---
+map.on('click', (e) => {
+  pendingCenter = { lat: e.latlng.lat, lon: e.latlng.lng };
+  document.getElementById('muniCenter').value = `${e.latlng.lat.toFixed(5)}, ${e.latlng.lng.toFixed(5)}`;
+  updatePreviewCircle();
+});
+
+let previewCircle = null;
+function updatePreviewCircle() {
+  if (previewCircle) map.removeLayer(previewCircle);
+  if (!pendingCenter) return;
+  const radius = parseFloat(document.getElementById('muniRadius').value) || 300;
+  previewCircle = L.circle([pendingCenter.lat, pendingCenter.lon], {
+    radius, color: '#3b5bdb', fillColor: '#3b5bdb', fillOpacity: 0.1, dashArray: '4'
+  }).addTo(map);
+}
+document.getElementById('muniRadius').addEventListener('input', updatePreviewCircle);
+
+document.getElementById('registerBtn').addEventListener('click', async () => {
+  const municipality_id = document.getElementById('muniId').value.trim();
+  const name = document.getElementById('muniName').value.trim();
+  const radius_m = parseFloat(document.getElementById('muniRadius').value);
+  const statusEl = document.getElementById('registerStatus');
+
+  if (!municipality_id || !name || !pendingCenter) {
+    statusEl.innerHTML = '<div class="status-msg">Fill in ID, name, and click the map to set a center.</div>';
+    return;
+  }
+
+  try {
+    const headers = {'Content-Type': 'application/json'};
+    if (SERVER.secure) headers['X-Admin-Key'] = document.getElementById('adminKey').value;
+    const res = await fetch(`${CLOUD_URL}/api/municipalities`, {
+      method: 'POST', headers,
+      body: JSON.stringify({
+        municipality_id, name, center_lat: pendingCenter.lat,
+        center_lon: pendingCenter.lon, radius_m
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const msg = Array.isArray(data.detail) ? data.detail.map(d => d.msg).join('; ') : data.detail;
+      const hint = res.status === 422 ? ' IDs may use letters, digits, _ and - only.' : '';
+      statusEl.innerHTML = `<div class="status-msg err">Not registered: ${esc(msg)}.${hint}</div>`;
+      return;
+    }
+    saveToken(municipality_id, data.access_token);
+    const base = location.href.split(/[?#]/)[0];
+    const apiPart = PARAMS.get('api') ? `api=${encodeURIComponent(CLOUD_URL)}&` : '';
+    const link = `${base}?${apiPart}muni=${encodeURIComponent(municipality_id)}&lock=1#token=${data.access_token}`;
+    statusEl.innerHTML = `<div class="status-msg ok">Registered "${esc(name)}".<br><br>
+      <b>Your municipality's private link</b> (bookmark it — it contains your access token,
+      which is shown only once and is needed to mark repairs):<br>
+      <input readonly style="width:100%;margin-top:6px" value="${esc(link)}" onclick="this.select()">
+      <button style="margin-top:6px" onclick="navigator.clipboard.writeText('${esc(link)}');this.textContent='Copied'">Copy link</button></div>`;
+    if (previewCircle) { map.removeLayer(previewCircle); previewCircle = null; }
+    pendingCenter = null;
+    document.getElementById('muniCenter').value = '';
+    await loadMunicipalities();
+  } catch (e) {
+    statusEl.innerHTML = `<div class="status-msg err">Could not reach cloud service at ${esc(CLOUD_URL)}.</div>`;
+  }
+});
+
+// --- Load registered municipalities into dropdown + draw their circles ---
+async function loadMunicipalities() {
+  try {
+    const res = await fetch(`${CLOUD_URL}/api/municipalities`);
+    const data = await res.json();
+    setConn(true);
+    const select = document.getElementById('muniSelect');
+    const currentValue = select.value;
+    select.innerHTML = '<option value="">Select municipality…</option>';
+
+    Object.values(boundaryCircles).forEach(c => map.removeLayer(c));
+    boundaryCircles = {};
+
+    data.municipalities.forEach(m => {
+      if (LOCKED && m.municipality_id !== PARAMS.get('muni')) return;
+      if (LOCKED) document.getElementById('title').textContent = `🛣️ EcoRoads — ${m.name}`;
+      const opt = document.createElement('option');
+      opt.value = m.municipality_id;
+      opt.textContent = m.name;
+      select.appendChild(opt);
+
+      const circle = L.circle([m.center_lat, m.center_lon], {
+        radius: m.radius_m, color: '#495057', fillOpacity: 0.03, weight: 1, dashArray: '3'
+      }).addTo(map);
+      boundaryCircles[m.municipality_id] = circle;
+    });
+    select.value = currentValue;
+    if (preselect && data.municipalities.some(m => m.municipality_id === preselect)) {
+      select.value = preselect;
+      preselect = null;
+      lastFittedMunicipality = null;
+      loadHazards();
+    }
+  } catch (e) {
+    setConn(false);
+    console.error('Could not load municipalities', e);
+  }
+}
+
+// --- Hazards for selected municipality ---
+function clearHazardMarkers() {
+  hazardMarkers.forEach(m => map.removeLayer(m));
+  hazardMarkers = [];
+}
+
+function renderHazards(hazards, repaired, municipalityId) {
+  clearHazardMarkers();
+  const list = document.getElementById('hazardList');
+  list.innerHTML = '';
+
+  document.getElementById('statTotal').textContent = hazards.length;
+  document.getElementById('statCritical').textContent = hazards.filter(h => h.severity_tier === 'Critical').length;
+  document.getElementById('statHigh').textContent = hazards.filter(h => h.severity_tier === 'High').length;
+  document.getElementById('statReopened').textContent = hazards.filter(h => h.status === 'reopened').length;
+  document.getElementById('statRepaired').textContent = repaired.length;
+
+  if (hazards.length === 0) {
+    list.innerHTML = '<div class="empty-state">No open hazards for this municipality.</div>';
+  }
+
+  hazards.forEach(h => {
+    const color = TIER_HEX[h.severity_tier] || "#888";
+    const marker = L.circleMarker([h.lat, h.lon], {
+      radius: 6 + h.severity_pct / 10, color: h.status === 'reopened' ? '#ff1744' : color,
+      fillColor: color, fillOpacity: 0.7, weight: h.status === 'reopened' ? 4 : 2
+    }).addTo(map);
+    marker.bindPopup(`<b>${esc(h.severity_tier)}</b> — ${h.severity_pct}%<br>`
+      + `Confirmed by ${h.confirmed_by_vehicles.length} vehicle(s)<br>Last seen ${esc(fmtTime(h.last_seen))}`
+      + (h.status === 'reopened' ? `<br><b style="color:#d32f2f">Detected again after repair on ${esc(fmtTime(h.repaired_at))}</b>` : ''));
+    hazardMarkers.push(marker);
+
+    const tags = (h.status === 'reopened' ? '<span class="tag reopened">reopened</span>' : '')
+               + (h.road_verified ? '' : '<span class="tag unverified" title="OpenStreetMap was unreachable when this was reported">road unverified</span>');
+    const card = document.createElement('div');
+    card.className = 'hazard-card';
+    card.innerHTML = `
+      <div class="top-row">
+        <span>Hazard #${h.cluster_id}${tags}</span>
+        <span class="severity-badge" style="background:${color}">${esc(h.severity_tier)} ${h.severity_pct}%</span>
+      </div>
+      <div class="meta">${h.detection_count} detection(s) · confirmed by ${h.confirmed_by_vehicles.map(esc).join(', ')}</div>
+      <div class="meta">First seen ${esc(fmtTime(h.first_seen))} · last seen ${esc(fmtTime(h.last_seen))}</div>
+      ${h.status === 'reopened' ? `<div class="meta" style="color:#ff8a80">Marked repaired ${esc(fmtTime(h.repaired_at))} — still being detected</div>` : ''}
+      <div class="card-actions"><button class="repairBtn">Mark repaired</button></div>
+    `;
+    card.addEventListener('click', () => { map.setView([h.lat, h.lon], 18); marker.openPopup(); });
+    card.querySelector('.repairBtn').addEventListener('click', async (ev) => {
+      ev.stopPropagation();
+      const note = prompt('Repair note (optional, e.g. contractor / work order):', '') ;
+      if (note === null) return;   // cancelled
+      await markRepaired(municipalityId, h, note);
+    });
+    list.appendChild(card);
+  });
+
+  if (repaired.length) {
+    const head = document.createElement('div');
+    head.className = 'panel-section';
+    head.innerHTML = '<h3>Repaired (no detections since)</h3>';
+    list.appendChild(head);
+    repaired.forEach(r => {
+      const el = document.createElement('div');
+      el.className = 'repaired-card';
+      el.textContent = `${r.lat.toFixed(5)}, ${r.lon.toFixed(5)} — repaired ${fmtTime(r.repaired_at)} (${r.detection_count} earlier detection(s))`;
+      list.appendChild(el);
+    });
+  }
+}
+
+async function markRepaired(municipalityId, h, note, retried = false) {
+  let res;
+  try {
+    const headers = {'Content-Type': 'application/json'};
+    const token = getToken(municipalityId);
+    if (token) headers['X-Muni-Token'] = token;
+    res = await fetch(`${CLOUD_URL}/api/municipalities/${encodeURIComponent(municipalityId)}/repairs`, {
+      method: 'POST', headers, body: JSON.stringify({ lat: h.lat, lon: h.lon, note: note || null })
+    });
+  } catch (e) {
+    alert('Could not record the repair — is the cloud service reachable?');
+    return;
+  }
+  if (res.status === 401 && !retried) {
+    const t = prompt("Marking repairs needs this municipality's access token (from its private link):");
+    if (t) { saveToken(municipalityId, t.trim()); return markRepaired(municipalityId, h, note, true); }
+    return;
+  }
+  if (!res.ok) { alert(`The server refused the repair (${res.status}).`); return; }
+  await loadHazards(false);
+}
+
+let lastFittedMunicipality = null;
+async function loadHazards(fit = true) {
+  const municipalityId = document.getElementById('muniSelect').value;
+  if (!municipalityId) {
+    clearHazardMarkers();
+    document.getElementById('hazardList').innerHTML = '<div class="empty-state">Select a municipality to view its hazards.</div>';
+    return;
+  }
+  try {
+    const res = await fetch(`${CLOUD_URL}/api/municipalities/${encodeURIComponent(municipalityId)}/hazards`);
+    if (!res.ok) throw new Error(res.status);
+    const data = await res.json();
+    setConn(true);
+    renderHazards(data.hazards, data.repaired || [], municipalityId);
+    // only re-centre when the user picks a municipality, not on every auto-refresh
+    const circle = boundaryCircles[municipalityId];
+    if (circle && fit && lastFittedMunicipality !== municipalityId) {
+      map.fitBounds(circle.getBounds());
+      lastFittedMunicipality = municipalityId;
+    }
+  } catch (e) {
+    setConn(false);
+    document.getElementById('hazardList').innerHTML = '<div class="empty-state">Could not reach cloud service.</div>';
+  }
+}
+
+document.getElementById('refreshBtn').addEventListener('click', () => loadHazards(false));
+document.getElementById('muniSelect').addEventListener('change', () => { lastFittedMunicipality = null; loadHazards(); });
+
+loadServerConfig();
+loadMunicipalities();
+setInterval(() => { loadMunicipalities(); loadHazards(false); }, REFRESH_S * 1000);
+</script>
+
+</body>
+</html>

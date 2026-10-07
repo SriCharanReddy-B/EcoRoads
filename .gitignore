@@ -1,0 +1,21 @@
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+# data & models (large / machine-specific)
+*.db
+*.db-wal
+*.db-shm
+*.pt
+ecoroads-edge/runs/
+ecoroads-edge/datasets/
+# per-vehicle secrets/config
+ecoroads-edge/config.json
+# drives, certificates, demo runtime
+ecoroads-edge/sessions/
+ecoroads-edge/certs/
+demo/runtime/
+demo/*.mp4
+demo/runtime_host/
