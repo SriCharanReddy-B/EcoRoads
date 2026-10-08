@@ -107,13 +107,19 @@ def call_gemini(prompt, api_key, model):
         GEMINI_URL.format(model=model),
         headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
         json={"contents": [{"parts": [{"text": prompt}]}],
-              "generationConfig": {"temperature": 0.2, "maxOutputTokens": 600}},
+              # Gemini 3 models "think" before answering, and those thinking tokens count
+              # against maxOutputTokens — so leave plenty of room or the ticket gets cut off.
+              "generationConfig": {"temperature": 0.2, "maxOutputTokens": 2048}},
         timeout=TIMEOUT_S,
     )
     resp.raise_for_status()
     data = resp.json()
-    text = "".join(p.get("text", "") for p in
-                   data["candidates"][0]["content"]["parts"]).strip()
+    cand = data["candidates"][0]
+    if cand.get("finishReason") == "MAX_TOKENS":
+        raise ValueError("ticket was cut off (MAX_TOKENS)")
+    # skip any "thought" parts; keep only the answer text
+    text = "".join(p.get("text", "") for p in cand["content"]["parts"]
+                   if not p.get("thought")).strip()
     if not text:
         raise ValueError("empty response")
     return text
