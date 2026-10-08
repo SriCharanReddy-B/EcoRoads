@@ -51,9 +51,19 @@ def post(cloud, path, body):
 
 
 def register_zones(cloud):
+    """Registers the wards and sets each ward's one municipal office (just north of
+    the centre), so tickets have an addressee and a Haversine distance."""
     for z in ZONES:
-        post(cloud, "/api/municipalities", z)
-    print(f"registered {len(ZONES)} municipalities")
+        token = post(cloud, "/api/municipalities", z).get("access_token")
+        hdr = {"X-Muni-Token": token} if token else {}
+        office = requests.get(f"{cloud}/api/municipalities/{z['municipality_id']}/office",
+                              timeout=60).json().get("office", {})
+        if office.get("is_default", True):
+            requests.post(f"{cloud}/api/municipalities/{z['municipality_id']}/office",
+                          json={"name": f"{z['name'].split(' Municipality')[0]} Municipal Office",
+                                "lat": z["center_lat"] + 0.0015, "lon": z["center_lon"]},
+                          headers={**HEADERS, **hdr}, timeout=60).raise_for_status()
+        print(f"registered {z['name']} (office ready)  private link token: {token}")
 
 
 def drive(cloud, vehicles, passes, start, rng):
@@ -104,8 +114,11 @@ def summary(cloud):
         print(f"\n{z['name']}: {r['count']} open hazard(s), {len(r['repaired'])} repaired")
         for h in r["hazards"]:
             flag = "  [REOPENED]" if h["status"] == "reopened" else ""
+            ticket = "ticket raised" if h.get("ticket") else \
+                f"no ticket yet ({h['detection_count']}/{h.get('detections_needed', '?')})"
             print(f"  #{h['cluster_id']:<2} {h['severity_tier']:<8} {h['severity_pct']:5.1f}%  "
-                  f"{h['detection_count']} detections, vehicles {','.join(h['confirmed_by_vehicles'])}{flag}")
+                  f"{h['detection_count']} detections, vehicles {','.join(h['confirmed_by_vehicles'])}"
+                  f"  -> {ticket}{flag}")
 
 
 def main():

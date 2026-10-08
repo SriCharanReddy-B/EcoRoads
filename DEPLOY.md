@@ -128,6 +128,28 @@ You don't need to create any tables. The app creates them itself on first start.
 
 **If a link is lost:** register the same ID again with the same details. That creates a new link, and the old one stops working.
 
+## Step 5b: Set each ward's office and turn on Gemini repair tickets (5 min)
+
+**One office per ward.** Every municipality has exactly one office, and all of its repair tickets go there.
+1. On a ward's private link, find the panel **Municipal office**. Until you set it, the centre of the ward's circle is used.
+2. Click **Set office location**, then click the office on the map.
+3. Enter its name (e.g. `Ward 12 Municipal Office`) and an optional contact. Setting it again moves it.
+
+Each hazard card shows the office and how far the pothole is from it (Haversine distance).
+
+**Automatic tickets.** A repair ticket is raised **automatically** when a pothole has been detected **3 times** (by any vehicles). It appears under **Repair tickets received** on that ward's dashboard, and the hazard card says "Ticket sent". Until then the card shows the count, e.g. `2/3`.
+- To change the number, add `ECOROADS_TICKET_MIN_DETECTIONS` in Render's Environment (e.g. `5`).
+- A pothole that comes back after being marked repaired gets a **new** ticket once it has been detected 3 more times; the ticket says the earlier repair failed.
+
+**Gemini writes the ticket text.**
+1. Go to **aistudio.google.com**, click **Get API key → Create API key**, and copy it. The free tier is enough.
+2. In Render, open **ecoroads → Environment → Add environment variable**:
+   - `GEMINI_API_KEY` = your key
+   - optional: `GEMINI_MODEL`, if Google has renamed the model. The default is set in `ecoroads-cloud/app/ticketing.py`.
+3. Click **Save, rebuild and deploy**.
+
+Gemini gets only the system's facts: location, severity, number of detections and vehicles, the office and its distance, and any failed repair. Without a key, or if Gemini is unreachable, a built-in template writes the ticket instead, so tickets are never missed. The ticket window shows which one wrote it, and **Regenerate** writes a fresh draft.
+
 ## Step 6: Publish the edge node download (5 min, after training)
 
 This step needs your trained model at `ecoroads-edge\models\best.pt`.

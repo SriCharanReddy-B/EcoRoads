@@ -19,8 +19,8 @@ def client(tmp_path, monkeypatch, key=None, admin=None):
         monkeypatch.setenv("ECOROADS_INGEST_KEY", key)
     if admin:
         monkeypatch.setenv("ECOROADS_ADMIN_KEY", admin)
-    import db, road_registry, municipality_registry, service
-    for m in (db, road_registry, municipality_registry, service):
+    import db, road_registry, municipality_registry, offices, ticketing, service
+    for m in (db, road_registry, municipality_registry, offices, ticketing, service):
         importlib.reload(m)
     _reset_postgres(db)
     import main
@@ -90,7 +90,7 @@ def test_secure_mode_admin_key_and_municipality_tokens(tmp_path, monkeypatch):
 def test_open_mode_and_dashboard_served(tmp_path, monkeypatch):
     c = client(tmp_path, monkeypatch)
     cfg = c.get("/api/config").json()
-    assert cfg == {"secure": False, "edge_download_url": None}
+    assert cfg["secure"] is False and cfg["edge_download_url"] is None
     page = c.get("/")
     assert page.status_code == 200 and "EcoRoads" in page.text
 
@@ -103,4 +103,40 @@ def _reset_postgres(db):
         return
     assert os.environ.get("ECOROADS_TEST_ALLOW_DROP") == "1", "refusing to drop tables in DATABASE_URL"
     with db.connect() as conn:
-        conn.execute("DROP TABLE IF EXISTS hazards, repairs, road_cache, municipalities CASCADE")
+        conn.execute("DROP TABLE IF EXISTS hazards, repairs, road_cache, offices, tickets, "
+                     "municipalities CASCADE")
+
+
+def test_office_and_auto_tickets_api_secure(tmp_path, monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+    monkeypatch.setenv("ECOROADS_TICKET_MIN_DETECTIONS", "2")
+    c = client(tmp_path, monkeypatch, admin="adm1n")
+    token = c.post("/api/municipalities", json=WARD, headers={"X-Admin-Key": "adm1n"}).json()["access_token"]
+    assert c.get("/api/config").json()["ticket_min_detections"] == 2
+    assert c.get("/api/municipalities/ward_a/office").json()["office"]["is_default"] is True
+    office = {"name": "Ward A office", "lat": 17.4080, "lon": 78.4776}
+    assert c.post("/api/municipalities/ward_a/office", json=office).status_code == 401
+    assert c.post("/api/municipalities/ward_a/office", json=office,
+                  headers={"X-Muni-Token": token}).status_code == 200
+    assert c.get("/api/municipalities/ward_a/office").json()["office"]["name"] == "Ward A office"
+
+    # 1st detection: below the threshold, no ticket
+    c.post("/api/ingest", json={"hazards": [HAZ]})
+    hz = c.get("/api/municipalities/ward_a/hazards").json()["hazards"][0]
+    assert hz["office"] == "Ward A office" and hz["ticket"] is None
+    spot = {"lat": hz["lat"], "lon": hz["lon"]}
+    assert c.post("/api/municipalities/ward_a/tickets", json=spot,
+                  headers={"X-Muni-Token": token}).status_code == 409
+
+    # 2nd detection: the ingest's background task raises the ticket by itself
+    r = c.post("/api/ingest", json={"hazards": [{**HAZ, "timestamp": "2026-10-03T11:00:00Z"}]})
+    assert r.json()["municipalities_updated"] == ["ward_a"]
+    tickets = c.get("/api/municipalities/ward_a/tickets").json()["tickets"]
+    assert len(tickets) == 1 and "ASSIGNED TO: Ward A office" in tickets[0]["text"]
+    assert c.get("/api/municipalities/ward_a/hazards").json()["hazards"][0]["ticket"] is not None
+
+    # regenerate: staff only
+    assert c.post("/api/municipalities/ward_a/tickets", json=spot).status_code == 401
+    assert c.post("/api/municipalities/ward_a/tickets", json=spot,
+                  headers={"X-Muni-Token": token}).status_code == 200
+    assert len(c.get("/api/municipalities/ward_a/tickets").json()["tickets"]) == 2

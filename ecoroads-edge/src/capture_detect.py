@@ -187,6 +187,7 @@ def main():
     model = YOLO(cfg["model_path"])
     conn = get_connection()
     debouncer = Debouncer(cfg["event_gap_s"], cfg["event_max_span_m"])
+    hazard_classes = {c.lower() for c in cfg["hazard_classes"]}
 
     frame_count = logged_count = no_fix_count = 0
     fps_t, fps_n, fps = time.monotonic(), 0, 0.0
@@ -228,8 +229,19 @@ def main():
             if frame_count % cfg["frame_skip"] == 0:
                 result = model.predict(frame, conf=cfg["confidence_threshold"], verbose=False)[0]
                 best = None  # strongest box in this frame
+                names = getattr(result, "names", None) or {}
                 for box in result.boxes:
                     x1, y1, x2, y2 = box.xyxy[0].tolist()
+                    cls_name = str(names.get(int(box.cls[0]), "")) if names and hasattr(box, "cls") else ""
+                    # Multi-class models (e.g. Pothole / Drain Hole / Sewer Cover): only the
+                    # hazard classes are logged; manholes etc. are shown in grey and ignored.
+                    is_hazard = not cls_name or cls_name.lower() in hazard_classes
+                    if not is_hazard:
+                        if cfg["show_window"]:
+                            cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (160, 160, 160), 1)
+                            cv2.putText(frame, cls_name, (int(x1), int(y1) - 6),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (160, 160, 160), 1)
+                        continue
                     sev = compute_severity_pct(float(box.conf[0]),
                                                bbox_area_pct((x1, y1, x2, y2), frame.shape))
                     if best is None or sev > best:

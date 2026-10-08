@@ -56,6 +56,15 @@
   .card-actions { margin-top: 8px; display: flex; gap: 8px; }
   .card-actions button { font-size: 12px; padding: 4px 8px; }
   .repaired-card { padding: 10px 16px; border-bottom: 1px solid #2a2e3d; font-size: 12px; color: var(--muted); }
+  .office-row { display:flex; justify-content:space-between; align-items:center; font-size:12px; padding:4px 0; }
+  .office-row button { font-size:11px; padding:2px 6px; }
+  #ticketModal { position:fixed; inset:0; background:rgba(0,0,0,.6); display:none; align-items:center;
+    justify-content:center; z-index:2000; }
+  #ticketModal .box { background:var(--panel); width:min(640px,92vw); max-height:85vh; overflow:auto;
+    border-radius:10px; padding:18px; border:1px solid #33374a; }
+  #ticketModal pre { white-space:pre-wrap; font-family:inherit; font-size:13px; line-height:1.5;
+    background:#12141c; padding:12px; border-radius:6px; }
+  #ticketModal .meta { font-size:12px; color:var(--muted); margin-bottom:8px; }
   #connBadge { font-size: 11px; padding: 3px 8px; border-radius: 10px; background: #3a1b1b; color: #ff8a80; }
   #connBadge.ok { background: #1b3a2b; color: #6fcf97; }
 </style>
@@ -95,9 +104,30 @@
       <div class="stat"><div class="num" id="statReopened" style="color:#ff8a80">0</div><div class="label">Reopened</div></div>
       <div class="stat"><div class="num" id="statRepaired" style="color:var(--low)">0</div><div class="label">Repaired</div></div>
     </div>
+    <div class="panel-section" id="officePanel" style="display:none">
+      <h3>Municipal office (receives this municipality's tickets)</h3>
+      <div id="officeInfo"></div>
+      <button id="setOfficeBtn" style="width:100%;margin-top:6px;">Set office location (click it on the map)</button>
+    </div>
+    <div class="panel-section" id="ticketPanel" style="display:none">
+      <h3 id="ticketHead">Repair tickets</h3>
+      <div class="hint" id="ticketRule"></div>
+      <div id="ticketList"></div>
+    </div>
     <div id="hazardList"></div>
   </div>
 </div>
+
+<div id="ticketModal"><div class="box">
+  <h3 style="margin:0 0 6px 0">Repair ticket</h3>
+  <div class="meta" id="ticketMeta"></div>
+  <pre id="ticketText"></pre>
+  <div class="card-actions">
+    <button id="ticketCopy">Copy</button>
+    <button id="ticketRegen">Regenerate</button>
+    <button id="ticketClose">Close</button>
+  </div>
+</div></div>
 
 <script>
 // URL options (no need to edit this file):
@@ -171,7 +201,9 @@ let boundaryCircles = {};   // municipality_id -> L.circle
 let pendingCenter = null;   // {lat, lon} clicked while registering
 
 // --- Registration: click map to set center ---
+let placingOffice = false;
 map.on('click', (e) => {
+  if (placingOffice) { placingOffice = false; setOfficeAt(e.latlng.lat, e.latlng.lng); return; }
   pendingCenter = { lat: e.latlng.lat, lon: e.latlng.lng };
   document.getElementById('muniCenter').value = `${e.latlng.lat.toFixed(5)}, ${e.latlng.lng.toFixed(5)}`;
   updatePreviewCircle();
@@ -266,6 +298,7 @@ async function loadMunicipalities() {
       preselect = null;
       lastFittedMunicipality = null;
       loadHazards();
+      loadOffice(select.value);
     }
   } catch (e) {
     setConn(false);
@@ -317,9 +350,18 @@ function renderHazards(hazards, repaired, municipalityId) {
       <div class="meta">${h.detection_count} detection(s) · confirmed by ${h.confirmed_by_vehicles.map(esc).join(', ')}</div>
       <div class="meta">First seen ${esc(fmtTime(h.first_seen))} · last seen ${esc(fmtTime(h.last_seen))}</div>
       ${h.status === 'reopened' ? `<div class="meta" style="color:#ff8a80">Marked repaired ${esc(fmtTime(h.repaired_at))} — still being detected</div>` : ''}
-      <div class="card-actions"><button class="repairBtn">Mark repaired</button></div>
+      ${h.office ? `<div class="meta">Office: <b>${esc(h.office)}</b> · ${(h.office_distance_m / 1000).toFixed(2)} km away (Haversine)</div>` : ''}
+      <div class="meta">${h.ticket
+          ? `Ticket sent ${esc(fmtTime(h.ticket.created_at))}`
+          : `Ticket is raised automatically at ${h.detections_needed} detections (${h.detection_count}/${h.detections_needed})`}</div>
+      <div class="card-actions">
+        ${h.ticket ? '<button class="ticketBtn">View ticket</button>' : ''}
+        <button class="repairBtn">Mark repaired</button>
+      </div>
     `;
     card.addEventListener('click', () => { map.setView([h.lat, h.lon], 18); marker.openPopup(); });
+    const tb = card.querySelector('.ticketBtn');
+    if (tb) tb.addEventListener('click', async (ev) => { ev.stopPropagation(); await showTicket(municipalityId, h); });
     card.querySelector('.repairBtn').addEventListener('click', async (ev) => {
       ev.stopPropagation();
       const note = prompt('Repair note (optional, e.g. contractor / work order):', '') ;
@@ -343,27 +385,121 @@ function renderHazards(hazards, repaired, municipalityId) {
   }
 }
 
-async function markRepaired(municipalityId, h, note, retried = false) {
+// POST that needs the municipality's access token on a secured server; asks once if missing.
+async function staffPost(municipalityId, path, body, retried = false) {
+  const headers = {'Content-Type': 'application/json'};
+  const token = getToken(municipalityId);
+  if (token) headers['X-Muni-Token'] = token;
   let res;
   try {
-    const headers = {'Content-Type': 'application/json'};
-    const token = getToken(municipalityId);
-    if (token) headers['X-Muni-Token'] = token;
-    res = await fetch(`${CLOUD_URL}/api/municipalities/${encodeURIComponent(municipalityId)}/repairs`, {
-      method: 'POST', headers, body: JSON.stringify({ lat: h.lat, lon: h.lon, note: note || null })
-    });
-  } catch (e) {
-    alert('Could not record the repair — is the cloud service reachable?');
-    return;
-  }
+    res = await fetch(`${CLOUD_URL}/api/municipalities/${encodeURIComponent(municipalityId)}${path}`,
+                      { method: 'POST', headers, body: JSON.stringify(body) });
+  } catch (e) { alert('Could not reach the cloud service.'); return null; }
   if (res.status === 401 && !retried) {
-    const t = prompt("Marking repairs needs this municipality's access token (from its private link):");
-    if (t) { saveToken(municipalityId, t.trim()); return markRepaired(municipalityId, h, note, true); }
-    return;
+    const t = prompt("This needs the municipality's access token (from its private link):");
+    if (t) { saveToken(municipalityId, t.trim()); return staffPost(municipalityId, path, body, true); }
+    return null;
   }
-  if (!res.ok) { alert(`The server refused the repair (${res.status}).`); return; }
-  await loadHazards(false);
+  if (!res.ok) {
+    let msg = res.status; try { msg = (await res.json()).detail || msg; } catch (e) {}
+    alert(`The server refused: ${msg}`); return null;
+  }
+  return res.json();
 }
+
+async function markRepaired(municipalityId, h, note) {
+  if (await staffPost(municipalityId, '/repairs', { lat: h.lat, lon: h.lon, note: note || null }))
+    await loadHazards(false);
+}
+
+// ---------------- the municipality's one office ----------------
+let officeMarker = null;
+async function loadOffice(municipalityId) {
+  if (officeMarker) { map.removeLayer(officeMarker); officeMarker = null; }
+  const panel = document.getElementById('officePanel');
+  if (!municipalityId) { panel.style.display = 'none'; return; }
+  panel.style.display = '';
+  let o = null;
+  try { o = (await (await fetch(`${CLOUD_URL}/api/municipalities/${encodeURIComponent(municipalityId)}/office`)).json()).office; }
+  catch (e) {}
+  const info = document.getElementById('officeInfo');
+  if (!o) { info.innerHTML = ''; return; }
+  info.innerHTML = `<div class="office-row"><span><b>${esc(o.name)}</b>${o.contact ? ' · ' + esc(o.contact) : ''}</span></div>`
+    + (o.is_default ? '<div class="hint">Not set yet: using the centre of the municipality\'s circle.</div>' : '');
+  officeMarker = L.circleMarker([o.lat, o.lon], { radius: 9, color: '#e8e9ed', weight: 3, fillColor: '#3b5bdb', fillOpacity: 1 })
+    .addTo(map).bindPopup(`<b>${esc(o.name)}</b>${o.contact ? '<br>' + esc(o.contact) : ''}`);
+}
+document.getElementById('setOfficeBtn').addEventListener('click', () => {
+  placingOffice = true;
+  document.getElementById('setOfficeBtn').textContent = 'Now click the office location on the map…';
+});
+async function setOfficeAt(lat, lon) {
+  document.getElementById('setOfficeBtn').textContent = 'Set office location (click it on the map)';
+  const municipalityId = document.getElementById('muniSelect').value;
+  const name = prompt('Office name (e.g. "Ward 12 Municipal Office"):');
+  if (!municipalityId || !name) return;
+  const contact = prompt('Contact (email/phone, optional):', '') || null;
+  if (await staffPost(municipalityId, '/office', { name, lat, lon, contact })) {
+    await loadOffice(municipalityId); await loadHazards(false);
+  }
+}
+
+// ---------------- tickets sent to this municipality ----------------
+async function loadTickets(municipalityId) {
+  const panel = document.getElementById('ticketPanel');
+  if (!municipalityId) { panel.style.display = 'none'; return; }
+  let tickets = [];
+  try { tickets = (await (await fetch(`${CLOUD_URL}/api/municipalities/${encodeURIComponent(municipalityId)}/tickets`)).json()).tickets || []; }
+  catch (e) { return; }
+  panel.style.display = '';
+  document.getElementById('ticketHead').textContent = `Repair tickets received (${tickets.length})`;
+  document.getElementById('ticketRule').textContent =
+    `Raised automatically when a pothole has been detected ${SERVER.ticket_min_detections || 3} times.`;
+  const list = document.getElementById('ticketList');
+  list.innerHTML = tickets.length ? '' : '<div class="hint">None yet.</div>';
+  tickets.slice(0, 20).forEach(t => {
+    const row = document.createElement('div');
+    row.className = 'office-row';
+    row.innerHTML = `<span><span class="severity-badge" style="background:${TIER_HEX[t.severity_tier] || '#888'}">${esc(t.severity_tier)}</span>
+      ${esc(fmtTime(t.created_at))}</span><button>Open</button>`;
+    row.querySelector('button').addEventListener('click', () => {
+      map.setView([t.lat, t.lon], 18);
+      openTicket(t, municipalityId, { lat: t.lat, lon: t.lon });
+    });
+    list.appendChild(row);
+  });
+}
+
+// ---------------- repair tickets (Gemini, template fallback) ----------------
+function haversineM(a, b, c, d) {
+  const R = 6371000, r = x => x * Math.PI / 180;
+  const h = Math.sin(r(c - a) / 2) ** 2 + Math.cos(r(a)) * Math.cos(r(c)) * Math.sin(r(d - b) / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+function openTicket(t, municipalityId, h) {
+  document.getElementById('ticketMeta').textContent =
+    `${t.generator.startsWith('gemini') ? 'Drafted by ' + t.generator.replace('gemini:', 'Gemini ') : 'Generated from template (Gemini not configured or unavailable)'}`
+    + (t.office_name ? ` · To: ${t.office_name}` : '')
+    + ` · ${fmtTime(t.created_at)} · Review before sending.`;
+  document.getElementById('ticketText').textContent = t.text;
+  document.getElementById('ticketModal').style.display = 'flex';
+  document.getElementById('ticketRegen').onclick = () => generateTicket(municipalityId, h);
+}
+async function generateTicket(municipalityId, h) {
+  const btn = document.getElementById('ticketRegen'); btn.disabled = true;
+  const r = await staffPost(municipalityId, '/tickets', { lat: h.lat, lon: h.lon });
+  btn.disabled = false;
+  if (r) { openTicket(r.ticket, municipalityId, h); loadHazards(false); }
+}
+async function showTicket(municipalityId, h) {
+  try {
+    const all = (await (await fetch(`${CLOUD_URL}/api/municipalities/${encodeURIComponent(municipalityId)}/tickets`)).json()).tickets;
+    const t = all.find(t => haversineM(h.lat, h.lon, t.lat, t.lon) <= 20);
+    if (t) openTicket(t, municipalityId, h); else alert('No ticket for this pothole yet.');
+  } catch (e) { alert('Could not load the ticket.'); }
+}
+document.getElementById('ticketClose').onclick = () => { document.getElementById('ticketModal').style.display = 'none'; };
+document.getElementById('ticketCopy').onclick = () => navigator.clipboard.writeText(document.getElementById('ticketText').textContent);
 
 let lastFittedMunicipality = null;
 async function loadHazards(fit = true) {
@@ -379,6 +515,7 @@ async function loadHazards(fit = true) {
     const data = await res.json();
     setConn(true);
     renderHazards(data.hazards, data.repaired || [], municipalityId);
+    loadTickets(municipalityId);
     // only re-centre when the user picks a municipality, not on every auto-refresh
     const circle = boundaryCircles[municipalityId];
     if (circle && fit && lastFittedMunicipality !== municipalityId) {
@@ -392,7 +529,9 @@ async function loadHazards(fit = true) {
 }
 
 document.getElementById('refreshBtn').addEventListener('click', () => loadHazards(false));
-document.getElementById('muniSelect').addEventListener('change', () => { lastFittedMunicipality = null; loadHazards(); });
+document.getElementById('muniSelect').addEventListener('change', () => {
+  lastFittedMunicipality = null; loadHazards(); loadOffice(document.getElementById('muniSelect').value);
+});
 
 loadServerConfig();
 loadMunicipalities();

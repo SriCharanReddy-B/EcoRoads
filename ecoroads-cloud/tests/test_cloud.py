@@ -20,8 +20,8 @@ PRIVATE_WAYS = [{"tags": {"highway": "service", "access": "private"}}]
 def fresh(tmp_path, monkeypatch, overpass=PUBLIC_WAYS):
     """Fresh DB + modules, with Overpass replaced by a fake."""
     monkeypatch.setenv("ECOROADS_DB", str(tmp_path / "test.db"))
-    import db, road_registry, service, municipality_registry
-    for m in (db, road_registry, municipality_registry, service):
+    import db, road_registry, service, municipality_registry, offices, ticketing
+    for m in (db, road_registry, municipality_registry, offices, ticketing, service):
         importlib.reload(m)
     _reset_postgres(db)
     db.init_db()
@@ -169,4 +169,5 @@ def _reset_postgres(db):
         return
     assert os.environ.get("ECOROADS_TEST_ALLOW_DROP") == "1", "refusing to drop tables in DATABASE_URL"
     with db.connect() as conn:
-        conn.execute("DROP TABLE IF EXISTS hazards, repairs, road_cache, municipalities CASCADE")
+        conn.execute("DROP TABLE IF EXISTS hazards, repairs, road_cache, offices, tickets, "
+                     "municipalities CASCADE")

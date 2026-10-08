@@ -15,7 +15,9 @@ Receives pothole events from every vehicle and routes each one to the municipali
 When a municipality's hazards are requested:
 
 4. **Cluster:** DBSCAN with the haversine metric (ε = 15 m) merges detections of the same pothole. The cluster's severity is the average, plus 3 points per extra confirming vehicle (at most +10).
-5. **Repairs:** when a municipality marks a spot repaired, earlier detections there are retired. If vehicles detect the pothole there again after the repair date, it comes back as **reopened**. That gives objective evidence that a contractor's repair failed or never happened.
+5. **Office (Haversine):** each municipality has exactly one office (`offices.py`; the circle centre until staff set it). Each pothole cluster shows its great-circle distance to that office.
+6. **Automatic repair tickets (Gemini):** after every accepted sync batch, `service.auto_tickets` raises a ticket for each pothole that has reached `ECOROADS_TICKET_MIN_DETECTIONS` detections (default 3) and has no ticket yet. It runs as a background task, so the vehicle doesn't wait. `ticketing.py` sends only system-computed facts (location, severity, detections, vehicles, office and distance, failed-repair note) to Gemini; without a key, or on any error, a deterministic template is used. A reopened pothole gets a new ticket after the threshold is reached again.
+7. **Repairs:** when a municipality marks a spot repaired, earlier detections there are retired. If vehicles detect the pothole there again after the repair date, it comes back as **reopened**. That gives objective evidence that a contractor's repair failed or never happened.
 
 ## Setup and run (Windows)
 
@@ -50,7 +52,10 @@ See [`../DEPLOY.md`](../DEPLOY.md): Render (free) + Neon PostgreSQL. With `DATAB
 | GET | `/api/municipalities/{id}/hazards` | `{hazards: [open + reopened], repaired: [...]}` |
 | POST | `/api/municipalities/{id}/repairs` | `{lat, lon, note?, repaired_at?}` |
 | GET | `/api/health` | liveness check (the edge sync worker probes this) |
-| GET | `/api/config` | `{secure, edge_download_url}` for the dashboard |
+| GET | `/api/config` | `{secure, edge_download_url, ticket_generator, ticket_min_detections}` for the dashboard |
+| GET/POST | `/api/municipalities/{id}/office` | the municipality's one office `{name, lat, lon, contact?}` (POST sets/moves it) |
+| GET | `/api/municipalities/{id}/tickets` | tickets received, newest first (raised automatically) |
+| POST | `/api/municipalities/{id}/tickets` | staff: `{lat, lon}` regenerates the ticket of a pothole that reached the threshold (409 if not yet) |
 
 ## Tests
 

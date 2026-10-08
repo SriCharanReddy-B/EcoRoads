@@ -18,3 +18,7 @@ services:
         generateValue: true
       - key: ECOROADS_INGEST_KEY     # vehicles must send this (Render generates it)
         generateValue: true
+      - key: GEMINI_API_KEY          # optional: Google AI Studio key for Gemini repair tickets
+        sync: false
+      - key: ECOROADS_TICKET_MIN_DETECTIONS   # detections of one pothole before a ticket is raised
+        value: "3"

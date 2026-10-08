@@ -68,6 +68,34 @@ CREATE TABLE IF NOT EXISTS repairs (
     note            TEXT
 );
 
+-- The municipal office of each municipality (ONE per municipality; offices.py
+-- replaces the row when it is moved). Tickets are addressed to it, with the
+-- Haversine distance from the pothole.
+CREATE TABLE IF NOT EXISTS offices (
+    id              {ID},
+    municipality_id TEXT NOT NULL REFERENCES municipalities(municipality_id),
+    name            TEXT NOT NULL,
+    lat             {FLOAT} NOT NULL,
+    lon             {FLOAT} NOT NULL,
+    contact         TEXT,
+    created_at      TEXT NOT NULL
+);
+
+-- Repair tickets (drafted by Gemini, or by a template if Gemini is unavailable).
+CREATE TABLE IF NOT EXISTS tickets (
+    id              {ID},
+    municipality_id TEXT NOT NULL REFERENCES municipalities(municipality_id),
+    lat             {FLOAT} NOT NULL,
+    lon             {FLOAT} NOT NULL,
+    office_name     TEXT,
+    distance_m      {FLOAT},
+    severity_pct    {FLOAT} NOT NULL,
+    severity_tier   TEXT NOT NULL,
+    text            TEXT NOT NULL,
+    generator       TEXT NOT NULL,         -- 'gemini:<model>' or 'template'
+    created_at      TEXT NOT NULL
+);
+
 -- Cache of OpenStreetMap road checks, keyed by ~11 m grid cell.
 CREATE TABLE IF NOT EXISTS road_cache (
     cell_key   TEXT PRIMARY KEY,

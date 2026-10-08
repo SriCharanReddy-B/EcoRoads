@@ -9,6 +9,9 @@ Endpoints:
   GET  /api/municipalities/{id}/hazards       clustered, road-filtered, severity-sorted hazards
   POST /api/municipalities/{id}/repairs       mark a hazard spot as repaired
   GET  /api/health                            liveness + counts (edge sync worker probes this)
+  GET/POST /api/municipalities/{id}/office    the municipality's one office (gets its tickets)
+  GET  /api/municipalities/{id}/tickets       repair tickets, raised AUTOMATICALLY after N detections
+  POST /api/municipalities/{id}/tickets       staff: regenerate the ticket of a pothole
 
 Run (from ecoroads-cloud/app):  uvicorn main:app --port 9000
 Interactive API docs:           http://localhost:9000/docs
@@ -23,6 +26,8 @@ Security (all optional, so local demos keep working with no setup):
 Other settings:
   DATABASE_URL                PostgreSQL (deployed) instead of the local SQLite file
   ECOROADS_EDGE_DOWNLOAD_URL  link shown on the dashboard to download the edge node
+  GEMINI_API_KEY / GEMINI_MODEL  Gemini repair-ticket drafting (template used if unset)
+  ECOROADS_TICKET_MIN_DETECTIONS detections of one pothole before a ticket is raised (default 3)
   PORT                        set by hosts like Render; see the Dockerfile
 
 The dashboard (ecoroads-dashboard/) is served from "/" by this same app,
@@ -34,12 +39,14 @@ import os
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+import offices as offices_mod
 import service
+import ticketing
 from db import init_db
 from municipality_registry import (check_token, get_municipality, list_municipalities,
                                    register_municipality)
@@ -92,6 +99,18 @@ class IngestPayload(BaseModel):
     hazards: List[HazardIn] = Field(max_length=500)
 
 
+class OfficeIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    lat: float = Field(ge=-90, le=90)
+    lon: float = Field(ge=-180, le=180)
+    contact: Optional[str] = Field(default=None, max_length=200)
+
+
+class TicketIn(BaseModel):
+    lat: float = Field(ge=-90, le=90)
+    lon: float = Field(ge=-180, le=180)
+
+
 class RepairIn(BaseModel):
     lat: float = Field(ge=-90, le=90)
     lon: float = Field(ge=-180, le=180)
@@ -103,7 +122,9 @@ class RepairIn(BaseModel):
 def get_config():
     """Tells the dashboard which mode the server runs in."""
     return {"secure": secure_mode(),
-            "edge_download_url": os.environ.get("ECOROADS_EDGE_DOWNLOAD_URL") or None}
+            "edge_download_url": os.environ.get("ECOROADS_EDGE_DOWNLOAD_URL") or None,
+            "ticket_generator": "gemini" if os.environ.get("GEMINI_API_KEY") else "template",
+            "ticket_min_detections": service.TICKET_MIN_DETECTIONS}
 
 
 @app.post("/api/municipalities")
@@ -122,7 +143,8 @@ def get_municipalities():
 
 
 @app.post("/api/ingest")
-def ingest_hazards(payload: IngestPayload, x_api_key: Optional[str] = Header(default=None)):
+def ingest_hazards(payload: IngestPayload, background: BackgroundTasks,
+                   x_api_key: Optional[str] = Header(default=None)):
     expected = os.environ.get("ECOROADS_INGEST_KEY")
     if expected and not _same(x_api_key, expected):
         raise HTTPException(status_code=401, detail="invalid or missing X-API-Key")
@@ -130,6 +152,10 @@ def ingest_hazards(payload: IngestPayload, x_api_key: Optional[str] = Header(def
         stats = service.ingest([h.model_dump() for h in payload.hazards])
     except ValueError as e:
         raise HTTPException(status_code=422, detail=f"bad timestamp: {e}")
+    # Raise tickets AFTER replying: a Gemini call takes seconds and the vehicle
+    # shouldn't wait for it. FastAPI runs background tasks once the response is sent.
+    if stats["municipalities_updated"]:
+        background.add_task(service.auto_tickets, stats["municipalities_updated"])
     return {"status": "ok", **stats}
 
 
@@ -140,6 +166,55 @@ def get_municipality_hazards(municipality_id: str):
     active, repaired = service.municipality_hazards(municipality_id)
     return {"municipality_id": municipality_id, "count": len(active),
             "hazards": active, "repaired": repaired}
+
+
+def require_municipality_staff(municipality_id, x_muni_token, x_admin_key):
+    """Secure mode: only this municipality's staff (token) or the admin may change its data."""
+    if get_municipality(municipality_id) is None:
+        raise HTTPException(status_code=404, detail="Municipality not registered")
+    if secure_mode() and not (check_token(municipality_id, x_muni_token)
+                              or _same(x_admin_key, os.environ["ECOROADS_ADMIN_KEY"])):
+        raise HTTPException(status_code=401, detail="this municipality's access token is required")
+
+
+@app.get("/api/municipalities/{municipality_id}/office")
+def get_office(municipality_id: str):
+    office = offices_mod.get_office(municipality_id)
+    if office is None:
+        raise HTTPException(status_code=404, detail="Municipality not registered")
+    return {"office": office}
+
+
+@app.post("/api/municipalities/{municipality_id}/office")
+def set_office(municipality_id: str, o: OfficeIn,
+               x_muni_token: Optional[str] = Header(default=None),
+               x_admin_key: Optional[str] = Header(default=None)):
+    """Set (or move) the municipality's single office; all its tickets are addressed to it."""
+    require_municipality_staff(municipality_id, x_muni_token, x_admin_key)
+    return {"status": "saved",
+            "office": offices_mod.set_office(municipality_id, o.name, o.lat, o.lon, o.contact)}
+
+
+@app.post("/api/municipalities/{municipality_id}/tickets")
+def regenerate_ticket(municipality_id: str, t: TicketIn,
+                      x_muni_token: Optional[str] = Header(default=None),
+                      x_admin_key: Optional[str] = Header(default=None)):
+    """Staff: write a fresh draft for a pothole that has already reached the threshold."""
+    require_municipality_staff(municipality_id, x_muni_token, x_admin_key)
+    try:
+        ticket = service.regenerate_ticket(municipality_id, t.lat, t.lon)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return {"status": "created", "ticket": ticket}
+
+
+@app.get("/api/municipalities/{municipality_id}/tickets")
+def get_tickets(municipality_id: str):
+    if get_municipality(municipality_id) is None:
+        raise HTTPException(status_code=404, detail="Municipality not registered")
+    return {"tickets": ticketing.list_tickets(municipality_id)}
 
 
 @app.post("/api/municipalities/{municipality_id}/repairs")
