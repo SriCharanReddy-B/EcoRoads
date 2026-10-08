@@ -68,7 +68,7 @@ CREATE TABLE IF NOT EXISTS repairs (
     note            TEXT
 );
 
--- The municipal office of each municipality (ONE per municipality; offices.py
+-- The municipal office of each municipality (ONE per municipality, offices.py
 -- replaces the row when it is moved). Tickets are addressed to it, with the
 -- Haversine distance from the pothole.
 CREATE TABLE IF NOT EXISTS offices (
@@ -131,6 +131,9 @@ class _PgConn:
         return self.raw.execute(sql.replace("?", "%s"), params)
 
     def executescript(self, script):
+        # drop "-- comment" lines first: a ";" inside a comment would otherwise split
+        # the script in the wrong place (SQLite's executescript handles this itself)
+        script = "\n".join(line for line in script.splitlines() if not line.strip().startswith("--"))
         for stmt in (s.strip() for s in script.split(";")):
             if stmt:
                 self.raw.execute(stmt)
