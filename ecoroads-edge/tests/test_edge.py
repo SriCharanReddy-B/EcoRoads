@@ -10,7 +10,7 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from debouncer import Debouncer, haversine_m           # noqa: E402
-from fusion import fuse, jolt_to_severity_pct          # noqa: E402
+from fusion import fuse, jolt_to_severity_pct, rejection_reason  # noqa: E402
 from gps_nmea import parse_nmea                         # noqa: E402
 from accel_reader import parse_sample                   # noqa: E402
 from severity import compute_severity_pct               # noqa: E402
@@ -141,3 +141,43 @@ def test_storage_roundtrip(tmp_path):
     assert len(rows) == 2 and storage.unsynced_count(conn) == 2
     storage.mark_synced(conn, [rows[0]["id"]])
     assert storage.unsynced_count(conn) == 1
+
+
+# ---- false-positive filters (tree shadows, stains) ----
+
+def _ev(frames=20, conf=0.6, speed=8.0):
+    return SimpleNamespace(frames=frames, max_conf=conf, speed_mps=speed)
+
+
+def test_flicker_is_rejected():
+    assert "frame" in rejection_reason(_ev(frames=2), None)
+
+
+def test_unsure_detection_without_bump_while_moving_is_rejected():
+    assert "shadow" in rejection_reason(_ev(conf=0.55), jolt_g=0.05)
+
+
+def test_unsure_detection_with_bump_is_kept():
+    assert rejection_reason(_ev(conf=0.55), jolt_g=0.9) is None
+
+
+def test_confident_detection_kept_without_bump():
+    # driver may have steered around a real pothole
+    assert rejection_reason(_ev(conf=0.85), jolt_g=0.05) is None
+
+
+def test_no_motion_data_or_standing_still_skips_jolt_rule():
+    assert rejection_reason(_ev(conf=0.55), jolt_g=None) is None          # sensor off
+    assert rejection_reason(_ev(conf=0.55, speed=0.0), jolt_g=0.0) is None  # desk test
+
+
+def test_jolt_rule_can_be_turned_off():
+    assert rejection_reason(_ev(conf=0.55), jolt_g=0.0, confirm_below_conf=0) is None
+
+
+def test_debouncer_tracks_max_confidence():
+    d = Debouncer(gap_s=1.0)
+    d.add(0.0, 17.0, 78.0, 50, "t0", 8.0, conf=0.6)
+    d.add(0.1, 17.0, 78.0, 40, "t1", 8.0, conf=0.8)
+    ev = d.flush()[0]
+    assert ev.max_conf == 0.8 and ev.frames == 2

@@ -19,3 +19,4 @@ ecoroads-edge/certs/
 demo/runtime/
 demo/*.mp4
 demo/runtime_host/
+ecoroads-edge/hard_negatives/

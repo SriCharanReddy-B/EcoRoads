@@ -73,7 +73,9 @@ def main():
     p.add_argument("--imgsz", type=int, default=640)
     p.add_argument("--batch", type=int, default=16,
                    help="16 fits an 8 GB RTX 4060; lower to 8 if you get CUDA out-of-memory")
-    p.add_argument("--base", default="yolov8n.pt", help="starting weights (nano = fastest at the edge)")
+    p.add_argument("--base", default="yolov8n.pt", help="starting weights (nano = fastest at the edge); "
+                   "use models/best.pt to fine-tune the current model")
+    p.add_argument("--name", default="pothole", help="run folder under runs/ (a new name keeps old results)")
     args = p.parse_args()
 
     data_yaml = Path(args.data) if args.data else download_from_roboflow(*args.roboflow)
@@ -91,18 +93,23 @@ def main():
         batch=args.batch,
         device=device,
         project=str(RUNS_DIR),
-        name="pothole",
+        name=args.name,
         exist_ok=True,
         patience=15,       # stop early if validation mAP stops improving
         workers=2,         # Windows dataloaders are happier with few workers
     )
 
-    best = RUNS_DIR / "pothole" / "weights" / "best.pt"
+    best = RUNS_DIR / args.name / "weights" / "best.pt"
     if not best.exists():
         sys.exit(f"Training finished but {best} is missing — check the log above.")
 
     MODELS_DIR.mkdir(exist_ok=True)
-    shutil.copy2(best, MODELS_DIR / "best.pt")
+    installed = MODELS_DIR / "best.pt"
+    if installed.exists():                       # never lose the previous model
+        backup = MODELS_DIR / "best_previous.pt"
+        shutil.copy2(installed, backup)
+        print(f"Previous model kept as {backup}")
+    shutil.copy2(best, installed)
     print(f"\nInstalled model -> {MODELS_DIR / 'best.pt'}")
 
     # Final validation numbers, worth quoting in your report next to the

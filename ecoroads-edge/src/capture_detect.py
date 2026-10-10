@@ -31,7 +31,7 @@ import cv2
 
 from config import load_config
 from debouncer import Debouncer
-from fusion import fuse
+from fusion import fuse, rejection_reason
 from severity import compute_severity_pct
 from storage import get_connection, log_hazard, unsynced_count
 
@@ -189,14 +189,20 @@ def main():
     debouncer = Debouncer(cfg["event_gap_s"], cfg["event_max_span_m"])
     hazard_classes = {c.lower() for c in cfg["hazard_classes"]}
 
-    frame_count = logged_count = no_fix_count = 0
+    frame_count = logged_count = no_fix_count = skipped_count = 0
     fps_t, fps_n, fps = time.monotonic(), 0, 0.0
 
     def save(events):
-        nonlocal logged_count
+        nonlocal logged_count, skipped_count
         for ev in events:
             severity, jolt = fuse(ev, rig.accel, cfg["camera_lookahead_m"], cfg["event_gap_s"],
                                   cfg["jolt_min_g"], cfg["jolt_max_g"])
+            reason = rejection_reason(ev, jolt, cfg["min_event_frames"], cfg["jolt_confirm_below_conf"],
+                                      cfg["jolt_min_g"], cfg["jolt_confirm_min_speed_mps"])
+            if reason:
+                skipped_count += 1
+                print(f"[skipped] {reason} at {ev.lat:.6f},{ev.lon:.6f}")
+                continue
             log_hazard(conn, cfg["vehicle_id"], ev.lat, ev.lon, severity, ev.wall_time_iso)
             logged_count += 1
             jolt_txt = f", jolt {jolt:.2f} g" if jolt is not None else ""
@@ -228,7 +234,8 @@ def main():
 
             if frame_count % cfg["frame_skip"] == 0:
                 result = model.predict(frame, conf=cfg["confidence_threshold"], verbose=False)[0]
-                best = None  # strongest box in this frame
+                best = None       # strongest box in this frame (severity)
+                best_conf = 0.0   # highest hazard confidence in this frame
                 names = getattr(result, "names", None) or {}
                 for box in result.boxes:
                     x1, y1, x2, y2 = box.xyxy[0].tolist()
@@ -244,6 +251,7 @@ def main():
                         continue
                     sev = compute_severity_pct(float(box.conf[0]),
                                                bbox_area_pct((x1, y1, x2, y2), frame.shape))
+                    best_conf = max(best_conf, float(box.conf[0]))
                     if best is None or sev > best:
                         best = sev
                     if cfg["show_window"]:
@@ -256,7 +264,7 @@ def main():
                         no_fix_count += 1   # a hazard without a location can't be routed
                     else:
                         save(debouncer.add(t, pos[0], pos[1], best, rig.wall_time(t),
-                                           rig.gps.get_speed_mps()))
+                                           rig.gps.get_speed_mps(), best_conf))
 
             pending = unsynced_count(conn)
             if rig.bridge:
@@ -265,7 +273,7 @@ def main():
             if cfg["show_window"]:
                 gps_txt = f"GPS {pos[0]:.5f},{pos[1]:.5f}" if pos else "GPS: no fix"
                 lines = [f"{rig.mode} | {fps:.0f} fps | {gps_txt}",
-                         f"logged: {logged_count}  pending sync: {pending}"
+                         f"logged: {logged_count}  skipped: {skipped_count}  pending sync: {pending}"
                          + (f"  no-GPS skips: {no_fix_count}" if no_fix_count else "")]
                 if rig.recorder:
                     lines.append("REC")
@@ -283,6 +291,7 @@ def main():
         cv2.destroyAllWindows()
         conn.close()
         print(f"\nDone. {logged_count} potholes logged locally"
+              f"{f', {skipped_count} rejected as likely false positives' if skipped_count else ''}"
               f"{f', {no_fix_count} detections skipped (no GPS fix)' if no_fix_count else ''}.")
 
 

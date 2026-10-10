@@ -26,13 +26,20 @@ DEFAULTS = {
     #   "http://PHONE_IP:8080/video"    -> IP Webcam app or any MJPEG/RTSP camera URL
     #   "path/to/video.mp4"             -> recorded video (classroom demo)
     "source": 0,
-    "confidence_threshold": 0.4,
+    "confidence_threshold": 0.5,    # boxes below this are ignored (raised from 0.4: fewer shadows)
+    "hazard_classes": ["pothole"],  # model classes that count as hazards (case-insensitive);
+                                    # others (e.g. "Drain Hole", "Sewer Cover") are ignored
     "frame_skip": 1,                # run YOLO on every Nth frame (1 = all; phone sends ~15 fps)
     "show_window": True,
 
     # de-duplication of the same pothole across consecutive frames
     "event_gap_s": 1.5,             # pothole unseen for this long -> event closes and is logged once
-    "event_max_span_m": 30.0,       # a long continuous bad stretch is split into ~30 m records
+    "event_max_span_m": 30.0,
+    # false-positive filters (fusion.rejection_reason) against tree shadows, stains, patches
+    "min_event_frames": 3,          # must be seen in at least this many frames
+    "jolt_confirm_below_conf": 0.7, # while moving, a detection less sure than this needs a bump
+                                    # on the accelerometer to count (0 = turn this rule off)
+    "jolt_confirm_min_speed_mps": 3.0,       # a long continuous bad stretch is split into ~30 m records
                                     # (a single pothole stays in view ~10-15 m at 30 km/h)
 
     # phone bridge (source = "phone")

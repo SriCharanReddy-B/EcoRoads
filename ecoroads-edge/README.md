@@ -128,6 +128,27 @@ How the two streams are matched (worth explaining in interviews):
 - **Severity rule:** if a jolt is found, final severity = 60% camera + 40% jolt. If no jolt is found, the camera value is kept, since the driver may simply have steered around the pothole.
 - **Failures don't stop detection:** if the sensor is unplugged, the node logs a warning and carries on with camera-only severity.
 
+## Tree shadows and other false positives
+
+Shadows, wet patches and dark repairs can look like potholes. Three layers deal with them:
+
+1. **Settings** in `config.json` (defaults shown; checked in `fusion.rejection_reason`):
+   - `"confidence_threshold": 0.5`: boxes the model is less sure about are ignored.
+   - `"min_event_frames": 3`: something seen in only 1–2 frames is flicker, not a pothole.
+   - `"jolt_confirm_below_conf": 0.7`: while the car is moving and the phone's motion
+     sensor is working, a detection less sure than 0.7 is kept only if the wheel felt a
+     bump. Shadows are flat, so they are dropped. Set to `0` to turn this rule off.
+   Dropped detections print `[skipped] …` and are counted in the preview window.
+2. **Cloud threshold:** a repair ticket is raised only after 3 detections of the same spot.
+3. **Retrain against shadows** (the real fix): double-click `RETRAIN_SHADOWS.bat`. It
+   - collects frames where the model fired on your recorded drives (`hard_negatives.py collect --session all`);
+   - lets you delete the ones that are real potholes, then adds the rest as **background
+     images** (empty label files) to train and validation (`hard_negatives.py add`);
+   - adds shadowed copies of ~15% of the training images with the same labels
+     (`shadow_augment.py`; `--preview out.jpg` shows an example, `--undo` removes them);
+   - fine-tunes `models/best.pt` for 30 epochs into `runs/pothole_shadows/` and installs it,
+     keeping the old model as `models/best_previous.pt`.
+
 ## Tests (no hardware needed)
 
 ```powershell

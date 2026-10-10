@@ -40,6 +40,7 @@ class HazardEvent:
     wall_time_iso: str        # UTC ISO timestamp of the worst frame (what gets stored)
     speed_mps: float = 0.0
     frames: int = 1
+    max_conf: float = 0.0     # highest YOLO confidence seen (used to filter false positives)
 
 
 class Debouncer:
@@ -48,7 +49,7 @@ class Debouncer:
         self.max_span_m = max_span_m
         self.current = None
 
-    def add(self, t, lat, lon, severity_pct, wall_time_iso, speed_mps=0.0):
+    def add(self, t, lat, lon, severity_pct, wall_time_iso, speed_mps=0.0, conf=0.0):
         """
         Feed ONE detection (the strongest box of a frame). Returns a list of
         events that closed because of it (usually empty).
@@ -64,11 +65,12 @@ class Debouncer:
 
         if ev is None:
             self.current = HazardEvent(t, t, lat, lon, lat, lon, severity_pct,
-                                       wall_time_iso, speed_mps)
+                                       wall_time_iso, speed_mps, max_conf=conf)
         else:
             ev.last_t = t
             ev.frames += 1
             ev.speed_mps = speed_mps
+            ev.max_conf = max(ev.max_conf, conf)
             if severity_pct > ev.severity_pct:
                 ev.severity_pct = severity_pct
                 ev.lat, ev.lon = lat, lon
