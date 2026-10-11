@@ -17,7 +17,7 @@ event, so an event is also closed once the vehicle has moved more than
 """
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 def haversine_m(lat1, lon1, lat2, lon2):
@@ -41,6 +41,8 @@ class HazardEvent:
     speed_mps: float = 0.0
     frames: int = 1
     max_conf: float = 0.0     # highest YOLO confidence seen (used to filter false positives)
+    # picture of the worst frame (with boxes); kept on this laptop only, never uploaded
+    snapshot: object = field(default=None, repr=False, compare=False)
 
 
 class Debouncer:
@@ -49,7 +51,7 @@ class Debouncer:
         self.max_span_m = max_span_m
         self.current = None
 
-    def add(self, t, lat, lon, severity_pct, wall_time_iso, speed_mps=0.0, conf=0.0):
+    def add(self, t, lat, lon, severity_pct, wall_time_iso, speed_mps=0.0, conf=0.0, snapshot=None):
         """
         Feed ONE detection (the strongest box of a frame). Returns a list of
         events that closed because of it (usually empty).
@@ -65,7 +67,7 @@ class Debouncer:
 
         if ev is None:
             self.current = HazardEvent(t, t, lat, lon, lat, lon, severity_pct,
-                                       wall_time_iso, speed_mps, max_conf=conf)
+                                       wall_time_iso, speed_mps, max_conf=conf, snapshot=snapshot)
         else:
             ev.last_t = t
             ev.frames += 1
@@ -75,6 +77,8 @@ class Debouncer:
                 ev.severity_pct = severity_pct
                 ev.lat, ev.lon = lat, lon
                 ev.wall_time_iso = wall_time_iso
+                if snapshot is not None:
+                    ev.snapshot = snapshot
         return closed
 
     def tick(self, t):

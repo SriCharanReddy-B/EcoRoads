@@ -29,6 +29,7 @@ DEFAULTS = {
     "confidence_threshold": 0.5,    # boxes below this are ignored (raised from 0.4: fewer shadows)
     "hazard_classes": ["pothole"],  # model classes that count as hazards (case-insensitive);
                                     # others (e.g. "Drain Hole", "Sewer Cover") are ignored
+    "save_detection_frames": True,  # save a picture of each logged/skipped pothole in the drive folder
     "frame_skip": 1,                # run YOLO on every Nth frame (1 = all; phone sends ~15 fps)
     "show_window": True,
 

@@ -51,6 +51,7 @@ There's **no app to install**. The phone opens a web page that the laptop serves
 
 ## After the drive
 
+- **Pictures of each pothole:** `ecoroads-edge\sessions\<drive>\detections\` has one picture per logged pothole (with the red box), the ones thrown away as likely shadows in `detections\skipped\`, and `index.csv` with time, GPS and severity. They stay on the laptop; only 5 numbers per pothole are uploaded. For a drive recorded before this feature, run `DETECTION_PICTURES.bat` (re-runs detection on the last drive without uploading anything again).
 - See the results on the dashboard at `http://localhost:8080`, under your municipality.
 - Score the drive against the potholes you scouted:
   ```

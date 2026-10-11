@@ -34,6 +34,7 @@ from debouncer import Debouncer
 from fusion import fuse, rejection_reason
 from severity import compute_severity_pct
 from storage import get_connection, log_hazard, unsynced_count
+from detection_frames import DetectionSaver, draw_boxes
 
 
 def bbox_area_pct(box, frame_shape):
@@ -78,6 +79,7 @@ class Rig:
     def __init__(self, cfg, replay=None, fast=False):
         self.cfg = cfg
         self.bridge = self.recorder = None
+        self.session_dir = None   # folder of the drive being recorded or replayed
         self.wall_time = lambda t: datetime.now(timezone.utc).isoformat()
         src = cfg["source"]
 
@@ -87,6 +89,7 @@ class Rig:
             if sdir is None or not (Path(sdir) / "video.mp4").exists():
                 raise SystemExit(f"No recorded drive found at {replay!r} (looked for video.mp4).")
             print(f"Replaying drive {sdir}")
+            self.session_dir = Path(sdir)
             self.video = ReplaySource(sdir, realtime=not fast)
             self.gps = ReplayGPS(sdir, clock=self.video.media_time)
             accel = ReplayAccel(sdir)
@@ -132,6 +135,7 @@ class Rig:
             if self.bridge:
                 self.bridge.listeners.append(self.recorder.on_bridge_event)
             print(f"Recording this drive to {self.recorder.dir}")
+            self.session_dir = Path(self.recorder.dir)
 
     def _make_gps(self):
         mode = self.cfg["gps_mode"]
@@ -189,6 +193,16 @@ def main():
     debouncer = Debouncer(cfg["event_gap_s"], cfg["event_max_span_m"])
     hazard_classes = {c.lower() for c in cfg["hazard_classes"]}
 
+    # pictures of every logged / skipped pothole (stay on this laptop)
+    saver = None
+    if cfg.get("save_detection_frames", True):
+        if rig.session_dir is not None:
+            folder = rig.session_dir / ("detections_replay" if rig.mode == "replay" else "detections")
+        else:
+            folder = Path(__file__).resolve().parent.parent / "detections" / time.strftime("%Y-%m-%d_%H%M%S")
+        saver = DetectionSaver(folder)
+        print(f"Pictures of detected potholes: {folder}")
+
     frame_count = logged_count = no_fix_count = skipped_count = 0
     fps_t, fps_n, fps = time.monotonic(), 0, 0.0
 
@@ -202,9 +216,13 @@ def main():
             if reason:
                 skipped_count += 1
                 print(f"[skipped] {reason} at {ev.lat:.6f},{ev.lon:.6f}")
+                if saver:
+                    saver.save(ev, ev.severity_pct, "skipped", reason)
                 continue
             log_hazard(conn, cfg["vehicle_id"], ev.lat, ev.lon, severity, ev.wall_time_iso)
             logged_count += 1
+            if saver:
+                saver.save(ev, severity, "logged")
             jolt_txt = f", jolt {jolt:.2f} g" if jolt is not None else ""
             print(f"[logged] pothole {severity}% (camera {ev.severity_pct}%{jolt_txt}, "
                   f"{ev.frames} frames) at {ev.lat:.6f},{ev.lon:.6f}")
@@ -236,6 +254,7 @@ def main():
                 result = model.predict(frame, conf=cfg["confidence_threshold"], verbose=False)[0]
                 best = None       # strongest box in this frame (severity)
                 best_conf = 0.0   # highest hazard confidence in this frame
+                hazard_boxes = [] # for the saved picture
                 names = getattr(result, "names", None) or {}
                 for box in result.boxes:
                     x1, y1, x2, y2 = box.xyxy[0].tolist()
@@ -252,6 +271,7 @@ def main():
                     sev = compute_severity_pct(float(box.conf[0]),
                                                bbox_area_pct((x1, y1, x2, y2), frame.shape))
                     best_conf = max(best_conf, float(box.conf[0]))
+                    hazard_boxes.append(((x1, y1, x2, y2), float(box.conf[0])))
                     if best is None or sev > best:
                         best = sev
                     if cfg["show_window"]:
@@ -263,8 +283,9 @@ def main():
                     if pos is None:
                         no_fix_count += 1   # a hazard without a location can't be routed
                     else:
+                        snap = draw_boxes(frame, hazard_boxes) if saver else None
                         save(debouncer.add(t, pos[0], pos[1], best, rig.wall_time(t),
-                                           rig.gps.get_speed_mps(), best_conf))
+                                           rig.gps.get_speed_mps(), best_conf, snap))
 
             pending = unsynced_count(conn)
             if rig.bridge:
@@ -293,6 +314,8 @@ def main():
         print(f"\nDone. {logged_count} potholes logged locally"
               f"{f', {skipped_count} rejected as likely false positives' if skipped_count else ''}"
               f"{f', {no_fix_count} detections skipped (no GPS fix)' if no_fix_count else ''}.")
+        if saver:
+            print(f"Pictures of each pothole: {saver.folder}")
 
 
 if __name__ == "__main__":

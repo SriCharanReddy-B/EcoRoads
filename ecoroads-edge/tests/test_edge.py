@@ -181,3 +181,24 @@ def test_debouncer_tracks_max_confidence():
     d.add(0.1, 17.0, 78.0, 40, "t1", 8.0, conf=0.8)
     ev = d.flush()[0]
     assert ev.max_conf == 0.8 and ev.frames == 2
+
+
+def test_detection_saver_writes_pictures_and_index(tmp_path):
+    import numpy as np
+    from debouncer import Debouncer
+    from detection_frames import DetectionSaver, draw_boxes
+    frame = np.zeros((120, 160, 3), np.uint8)
+    d = Debouncer(gap_s=1.0)
+    d.add(0.0, 17.4, 78.4, 40.0, "2026-10-11T10:00:00Z", conf=0.6,
+          snapshot=draw_boxes(frame, [((10, 10, 60, 60), 0.6)]))
+    d.add(0.1, 17.4, 78.4, 55.0, "2026-10-11T10:00:01Z", conf=0.7,
+          snapshot=draw_boxes(frame, [((20, 20, 90, 90), 0.7)]))
+    ev = d.flush()[0]
+    assert ev.snapshot is not None and ev.snapshot[20, 20, 2] == 255   # worst frame kept, box drawn
+    saver = DetectionSaver(tmp_path / "detections")
+    p1 = saver.save(ev, 55.0, "logged")
+    p2 = saver.save(ev, 55.0, "skipped", "likely a shadow")
+    assert p1.exists() and p1.parent == tmp_path / "detections"
+    assert p2.exists() and p2.parent.name == "skipped"
+    rows = (tmp_path / "detections" / "index.csv").read_text().strip().splitlines()
+    assert len(rows) == 3 and "likely a shadow" in rows[2]
